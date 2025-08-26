@@ -1,5 +1,6 @@
 import fs from 'fs'
-import { Pool } from 'pg'
+import pkg from 'pg'
+const { Pool } = pkg
 // these arrays will have blank last entry due to a trailling newline
 const totalMemberNumbersSql = fs.readFileSync('./sql/current-member-count.sql', 'utf8')
 const workingMemberNumbersSql = fs.readFileSync('./sql/member-with-discount-count.sql', 'utf8')
