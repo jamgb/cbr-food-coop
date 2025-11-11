@@ -21,7 +21,7 @@
     "cloud-sql": "yarn cloud-run run-sql.js",
     "cloud-run": "DATABASE_URL=\"$(heroku config:get DATABASE_URL -a cbrfoodcoop)\" node",
     "heroku-postbuild": "quasar build",
-    "db": "docker run -d --name dev-postgres -e POSTGRES_PASSWORD='Pass2021!' -v pgdata:/var/lib/postgresql/data -p 5432:5432 postgres",
+    "db": "docker run --rm -d --name dev-postgres -e POSTGRES_PASSWORD='Pass2021!' -v pgdata:/var/lib/postgresql/data -p 5432:5432 postgres",
     "db:shell": "docker exec -it dev-postgres psql -U postgres",
     "db:stop": "docker stop dev-postgres"
   },
