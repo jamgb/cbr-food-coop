@@ -87,7 +87,7 @@ Copy the token next to the email address you entered into the clipboard
 
 #### 5. Open up a browser tap and put in the following url
 
-http://localhost:8080/#/accept-invite/:78a6618bcbd0b523fa7a64386f31a49c
+http://localhost:8080/accept-invite/78a6618bcbd0b523fa7a64386f31a49c
 
 Where 78a66... is the token you copied from the ```invites``` table.
 
