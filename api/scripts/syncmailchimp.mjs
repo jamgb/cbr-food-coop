@@ -4,7 +4,7 @@ import fs from 'fs/promises'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import dotenv from 'dotenv'
-import { formatDateForMailchimp, calculateDaysLeft, emailHash } from '../utils/mailchimp.mjs'
+import { formatDateForMailchimp, calculateDaysLeft, emailHash, emailHash } from '../utils/mailchimp.mjs'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -174,10 +174,7 @@ function determineTags (member) {
  *   may have inaccurate join dates if their original join predates the lookback window.
  */
 function formatMemberForMailchimp (member, existingMailchimpMember = null) {
-  const emailHash = crypto
-    .createHash('md5')
-    .update(member.email.toLowerCase())
-    .digest('hex')
+  const emailHash = emailHash(member.email)
 
   const tags = determineTags(member)
 
