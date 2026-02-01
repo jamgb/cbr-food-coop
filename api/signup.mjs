@@ -5,6 +5,7 @@ import { DateTime } from 'luxon'
 import { query } from './database.mjs'
 import { hasRole } from './utils.mjs'
 import mailchimp from '@mailchimp/mailchimp_marketing'
+import { formatDateForMailchimp, calculateDaysLeft, determineSignupTags } from './utils/mailchimp.mjs'
 
 const router = express.Router()
 mailchimp.setConfig({
@@ -41,14 +42,60 @@ router.delete('/:id', hasRole('coordinator'), async (req, res) => {
   }
 })
 
-async function createMailchimp (email) {
-  await mailchimp.lists.addListMember(process.env.MAILCHIMP_LIST_ID,
-    {
-      skip_merge_validation: true,
-      email_address: email,
-      status: 'subscribed',
-      email_type: 'html'
+async function createMailchimp (membership, member, joinDate) {
+  const email = member.email.toLowerCase()
+
+  // Calculate days left until expiry
+  const daysLeft = calculateDaysLeft(membership.expires)
+
+  // Determine tags for new signup
+  const tags = determineSignupTags(member, membership)
+
+  const memberDetails = {
+    email_address: email,
+    status_if_new: 'subscribed',
+    merge_fields: {
+      FNAME: member.firstname || '',
+      LNAME: member.lastname || '',
+      PHONE: member.phone || '',
+      SUBURB: member.suburb || '',
+      MTYPE: membership.membership_type_id || '',
+      CONCESSION: member.concession_type || '',
+      EXPIRY: formatDateForMailchimp(membership.expires),
+      DAYSLEFT: daysLeft,
+      DISCEXP: '', // New members don't have discount expiry
+      JOINED: formatDateForMailchimp(joinDate.toJSDate()),
+      LASTVOL: '' // New members haven't volunteered yet
+    },
+    tags: tags
+  }
+
+  console.log('Creating Mailchimp member:', {
+    email: memberDetails.email_address,
+    merge_fields: memberDetails.merge_fields,
+    tags: memberDetails.tags
+  })
+
+  try {
+    const result = await mailchimp.lists.addListMember(
+      process.env.MAILCHIMP_LIST_ID,
+      memberDetails
+    )
+    console.log('✅ Mailchimp member created successfully:', {
+      email: result.email_address,
+      id: result.id,
+      status: result.status
     })
+    return result
+  } catch (error) {
+    console.error('❌ Failed to create Mailchimp member:', {
+      email: memberDetails.email_address,
+      error: error.message,
+      status: error.status,
+      response: error.response?.body || error.response?.text
+    })
+    throw error
+  }
 }
 
 async function createVend (member) {
@@ -105,22 +152,63 @@ export async function getNextMembershipId () {
   return `m${++id}`
 }
 
-async function createMember (joinDate, membershipId, member) {
-  try {
-    await createMailchimp(member.email)
-  } catch (e) {
-    // TODO: I want to be able to trace if this
-    //       hasn't worked and send the user a notice
+async function createMember (joinDate, membership, member) {
+  // Only create in Mailchimp if sendemails is not explicitly false
+  if (member.sendemails !== false) {
+    try {
+      await createMailchimp(membership, member, joinDate)
+    } catch (e) {
+      console.error('Failed to sync new member to Mailchimp:', {
+        email: member.email,
+        error: e.message
+      })
+      // Note: Member will be picked up by next sync script run if Mailchimp sync fails here
+      // Continue with member creation even if Mailchimp fails
+    }
   }
 
   const memberId = await getNextMemberId()
-  // Create the new member record
-  const newMember = await query('INSERT into customers (id, postal, city, name, firstname, lastname, email, phone, curdate, visible, membership_id, vend_id) values($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *', [memberId, member.postcode, member.suburb, `${member.firstname} ${member.lastname}`, member.firstname, member.lastname, member.email, member.phone, joinDate.toString(), true, membershipId, member.vend_id])
 
-  // add the extras
-  await query('INSERT into members_extra (id, sendemails) values($1, $2) RETURNING *', [memberId, member.sendemails])
-  // update the history
-  await query('INSERT into members_history (id, datenew, member, action, amountpaid, notes) values($1, $2, $3, $4, $5, $6) RETURNING *', [randomUUID(), joinDate.toString(), memberId, 'Registered', null, 'Entered into database'])
+  // Create the new member record
+  const newMember = await query(
+    'INSERT into customers (id, postal, city, name, firstname, lastname, email, phone, curdate, visible, membership_id, vend_id) values($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *',
+    [
+      memberId, // $1 - customers.id
+      member.postcode, // $2 - customers.postal
+      member.suburb, // $3 - customers.city
+      `${member.firstname} ${member.lastname}`, // $4 - customers.name
+      member.firstname, // $5 - customers.firstname
+      member.lastname, // $6 - customers.lastname
+      member.email, // $7 - customers.email
+      member.phone, // $8 - customers.phone
+      joinDate.toString(), // $9 - customers.curdate
+      true, // $10 - customers.visible
+      membership[0].membership_id, // $11 - customers.membership_id
+      member.vend_id // $12 - customers.vend_id
+    ]
+  )
+
+  // Add the extras
+  await query(
+    'INSERT into members_extra (id, sendemails) values($1, $2) RETURNING *',
+    [
+      memberId, // $1 - members_extra.id
+      member.sendemails !== false // $2 - members_extra.sendemails (default to true)
+    ]
+  )
+
+  // Update the history
+  await query(
+    'INSERT into members_history (id, datenew, member, action, amountpaid, notes) values($1, $2, $3, $4, $5, $6) RETURNING *',
+    [
+      randomUUID(), // $1 - members_history.id
+      joinDate.toString(), // $2 - members_history.datenew
+      memberId, // $3 - members_history.member
+      'Registered', // $4 - members_history.action
+      null, // $5 - members_history.amountpaid
+      'Entered into database' // $6 - members_history.notes
+    ]
+  )
 
   return newMember[0]
 }
@@ -141,13 +229,32 @@ router.post('/:id/member', hasRole('coordinator'), async (req, res) => {
     // Create membership
     const joinDate = DateTime.now()
     const membershipId = await getNextMembershipId()
-    const membership = await query('INSERT into memberships (membership_id, membership_type_id, concession, expires) VALUES ($1, $2, $3, $4) RETURNING *', [membershipId, signup[0].membership_type_id, signup[0].concession, joinDate.plus({ years: 1 })])
-    // TODO for now, we'll simply log these events into the members_history with the membershipId instead of the memberId
-    await query('INSERT into members_history (id, datenew, member, action, amountpaid, notes) values($1, $2, $3, $4, $5, $6) RETURNING *', [randomUUID(), joinDate.toString(), membershipId, 'Applied', req.body.paid, '12 months'])
+    const membership = await query(
+      'INSERT into memberships (membership_id, membership_type_id, concession, expires) VALUES ($1, $2, $3, $4) RETURNING *',
+      [
+        membershipId, // $1 - memberships.membership_id
+        signup[0].membership_type_id, // $2 - memberships.membership_type_id
+        signup[0].concession, // $3 - memberships.concession
+        joinDate.plus({ years: 1 }) // $4 - memberships.expires
+      ]
+    )
+
+    // Log membership application to history (using membershipId instead of memberId)
+    await query(
+      'INSERT into members_history (id, datenew, member, action, amountpaid, notes) values($1, $2, $3, $4, $5, $6) RETURNING *',
+      [
+        randomUUID(), // $1 - members_history.id
+        joinDate.toString(), // $2 - members_history.datenew
+        membershipId, // $3 - members_history.member (membershipId for membership-level events)
+        'Applied', // $4 - members_history.action
+        req.body.paid, // $5 - members_history.amountpaid
+        '12 months' // $6 - members_history.notes
+      ]
+    )
 
     // Create the members
     const membersToCreate = await query('SELECT * from signup_members WHERE signup_id = $1', [req.params.id])
-    const members = await Promise.all(membersToCreate.map(member => createMember(joinDate, membershipId, member)))
+    const members = await Promise.all(membersToCreate.map(member => createMember(joinDate, membership, member)))
       .catch(e => { return res.sendStatus(e.status) })
 
     // delete the signup

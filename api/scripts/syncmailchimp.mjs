@@ -1,12 +1,16 @@
 import mailchimp from '@mailchimp/mailchimp_marketing'
-import crypto from 'crypto'
 import pg from 'pg'
 import fs from 'fs/promises'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
+import dotenv from 'dotenv'
+import { formatDateForMailchimp, calculateDaysLeft, emailHash } from '../utils/mailchimp.mjs'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
+
+// Load environment variables
+dotenv.config({ path: join(__dirname, '..', '..', '.env') })
 
 // Configuration
 const config = {
@@ -16,7 +20,8 @@ const config = {
     listId: process.env.MAILCHIMP_LIST_ID
   },
   database: {
-    connectionString: process.env.DB_CONNECTION_STRING || 'postgres://postgres:Pass2021!@localhost:5432/postgres'
+    connectionString: process.env.DATABASE_URL || 'postgres://postgres:Pass2021!@localhost:5432/postgres',
+    ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
   },
   sync: {
     lookbackDays: parseInt(process.env.LOOKBACK_DAYS || '7'),
@@ -72,11 +77,14 @@ async function getAllMailchimpMembers () {
  * Get member data from database
  */
 async function getMembersFromDatabase (lookbackDays, maxListSize = config.sync.maxListSize) {
-  const client = new pg.Client(config.database)
+  const client = new pg.Client({
+    connectionString: config.database.connectionString,
+    ssl: config.database.ssl
+  })
   await client.connect()
 
   try {
-    const sqlPath = join(__dirname, '..', 'sql', 'mailchimp-export.sql')
+    const sqlPath = join(__dirname, '..', '..', 'sql', 'mailchimp-export.sql')
     let sql = await fs.readFile(sqlPath, 'utf-8')
 
     // Replace parameters
@@ -138,19 +146,14 @@ function determineTags (member) {
     tags.push('Provisional')
   }
 
-  // Membership type
-  if (member.membership_type) {
-    tags.push(member.membership_type)
-  }
-
   // Concession status
   if (member.concession_type) {
-    tags.push(member.concession_type)
+    tags.push(String(member.concession_type))
   }
 
   // Discount status
   if (member.discount_status) {
-    tags.push(member.discount_status)
+    tags.push(String(member.discount_status))
   }
 
   if (!member.claimed_first_shop) {
@@ -188,7 +191,7 @@ function formatMemberForMailchimp (member, existingMailchimpMember = null) {
     ? existingMailchimpMember.status
     : 'subscribed'
 
-  return {
+  const memberDetails = {
     email_address: member.email,
     email_hash: emailHash,
     status_if_new: 'subscribed',
@@ -211,6 +214,7 @@ function formatMemberForMailchimp (member, existingMailchimpMember = null) {
     tags: tags,
     existingTags: existingMailchimpMember?.tags?.map(t => t.name) || []
   }
+  return memberDetails
 }
 
 /**
@@ -226,7 +230,10 @@ function formatDate (dateString) {
  * Sync unsubscribed status back to database
  */
 async function syncUnsubscribesToDatabase (mailchimpMembers, dbMembers) {
-  const client = new pg.Client(config.database)
+  const client = new pg.Client({
+    connectionString: config.database.connectionString,
+    ssl: config.database.ssl
+  })
   await client.connect()
 
   try {
@@ -320,14 +327,11 @@ async function archiveRemovedMembers (mailchimpMembers, dbMembers) {
   for (let i = 0; i < batches.length; i++) {
     const batch = batches[i]
     const operations = batch.map(member => {
-      const emailHash = crypto
-        .createHash('md5')
-        .update(member.email_address.toLowerCase())
-        .digest('hex')
+      const hash = emailHash(member.email_address)
 
       return {
         method: 'DELETE',
-        path: `/lists/${config.mailchimp.listId}/members/${emailHash}`
+        path: `/lists/${config.mailchimp.listId}/members/${hash}`
       }
     })
 
@@ -357,29 +361,16 @@ async function archiveRemovedMembers (mailchimpMembers, dbMembers) {
  */
 async function syncBatchToMailchimp (members) {
   const operations = members.map(member => {
-    // Build tag operations: deactivate old tags, activate current tags
-    const tagsToDeactivate = member.existingTags
-      .filter(tag => !member.tags.includes(tag))
-      .map(tag => ({ name: tag, status: 'inactive' }))
-
-    const tagsToActivate = member.tags.map(tag => ({ name: tag, status: 'active' }))
-
-    const allTagOperations = [...tagsToDeactivate, ...tagsToActivate]
-
     const body = {
       email_address: member.email_address,
       status_if_new: member.status_if_new,
-      merge_fields: member.merge_fields
+      merge_fields: member.merge_fields,
+      tags: member.tags // Always include tags, even if empty array
     }
 
     // Only set status if member already exists (to preserve unsubscribed status)
     if (member.status) {
       body.status = member.status
-    }
-
-    // Only include tags if there are any operations
-    if (allTagOperations.length > 0) {
-      body.tags = allTagOperations
     }
 
     return {
@@ -412,6 +403,40 @@ async function syncBatchToMailchimp (members) {
       console.log(`Batch progress: ${batchStatus.finished_operations}/${batchStatus.total_operations}`)
     } while (batchStatus.status !== 'finished')
 
+    // If there were errors, fetch and display them
+    if (batchStatus.errored_operations > 0) {
+      console.error(`\n (!)  ${batchStatus.errored_operations} operations failed`)
+
+      // Download the response file to see error details
+      const responseUrl = batchStatus.response_body_url
+      if (responseUrl) {
+        console.log(`Error details available at: ${responseUrl}`)
+        console.log('Fetching error details...')
+
+        try {
+          const fetch = (await import('node-fetch')).default
+          const errorResponse = await fetch(responseUrl)
+          const errorData = await errorResponse.text()
+          const errors = errorData.split('\n')
+            .filter(line => line.trim())
+            .map(line => JSON.parse(line))
+            .filter(op => op.status_code !== 200)
+            .slice(0, 5) // Show first 5 errors
+
+          console.error('Sample errors:')
+          errors.forEach((err, idx) => {
+            console.error(`\nError ${idx + 1}:`)
+            console.error(`  Email: ${err.response?.email_address || 'unknown'}`)
+            console.error(`  Status: ${err.status_code}`)
+            console.error(`  Title: ${err.response?.title || 'unknown'}`)
+            console.error(`  Detail: ${err.response?.detail || 'unknown'}`)
+          })
+        } catch (fetchError) {
+          console.error('Could not fetch error details:', fetchError.message)
+        }
+      }
+    }
+
     return {
       success: batchStatus.finished_operations - batchStatus.errored_operations,
       errors: batchStatus.errored_operations
@@ -441,14 +466,27 @@ async function syncMailchimp () {
     const mailchimpMap = new Map(
       mailchimpMembers.map(m => [m.email_address.toLowerCase(), m])
     )
+    console.log(`Found ${mailchimpMembers.length} existing members in Mailchimp`)
 
     // Step 2: Get priority members from database
     console.log('\n=== Fetching members from database ===')
     const dbMembers = await getMembersFromDatabase(config.sync.lookbackDays, config.sync.maxListSize)
+    console.log(`Found ${dbMembers.length} members in database export`)
 
     if (dbMembers.length === 0) {
       console.log('No members to sync')
       return
+    }
+
+    // Log sample member data for debugging
+    if (dbMembers.length > 0) {
+      console.log('\nSample database member:', {
+        email: dbMembers[0].email,
+        membership_status: dbMembers[0].membership_status,
+        expiry_date: dbMembers[0].expiry_date,
+        is_approved: dbMembers[0].is_approved,
+        concession_type: dbMembers[0].concession_type
+      })
     }
 
     // Step 3: Sync unsubscribed status back to database
@@ -461,6 +499,17 @@ async function syncMailchimp () {
       const existingMember = mailchimpMap.get(member.email.toLowerCase())
       return formatMemberForMailchimp(member, existingMember)
     })
+
+    // Log sample formatted member
+    if (formattedMembers.length > 0) {
+      console.log('\nSample formatted member:', {
+        email: formattedMembers[0].email_address,
+        status: formattedMembers[0].status,
+        status_if_new: formattedMembers[0].status_if_new,
+        tags: formattedMembers[0].tags,
+        merge_fields: formattedMembers[0].merge_fields
+      })
+    }
 
     // Step 5: Sync updates/additions to Mailchimp
     console.log('\n=== Syncing members to Mailchimp ===')
@@ -475,21 +524,22 @@ async function syncMailchimp () {
     let totalErrors = 0
 
     for (let i = 0; i < batches.length; i++) {
-      console.log(`Processing batch ${i + 1}/${batches.length}`)
+      console.log(`\nProcessing batch ${i + 1}/${batches.length} (${batches[i].length} members)`)
       const result = await syncBatchToMailchimp(batches[i])
       totalSuccess += result.success
       totalErrors += result.errors
     }
 
+    console.log(`\n✅ Sync completed: ${totalSuccess} successful, ${totalErrors} errors`)
+
     // Step 6: Archive members who are no longer in the priority list
     console.log('\n=== Archiving members outside priority list ===')
-    await archiveRemovedMembers(mailchimpMembers, dbMembers)
+    const archiveResult = await archiveRemovedMembers(mailchimpMembers, dbMembers)
+    console.log(`Archived ${archiveResult.archived} members`)
 
-    console.log('\n=== Sync complete! ===')
-    console.log(`Successfully synced: ${totalSuccess}`)
-    console.log(`Errors: ${totalErrors}`)
+    console.log('\n🎉 Mailchimp sync completed successfully!')
   } catch (error) {
-    console.error('Sync failed:', error)
+    console.error('❌ Sync failed:', error)
     process.exit(1)
   }
 }

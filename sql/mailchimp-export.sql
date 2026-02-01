@@ -22,7 +22,7 @@ volunteer_last_date AS (
   FROM recent_actions   
   WHERE action = 'Volunteered'
   GROUP BY member
-)
+),
 
 -- this can be used to find first join date if needed
 -- only valid for new members - existing members should have join date already recorded.
@@ -31,7 +31,7 @@ earliest_action AS (
     member,
     MIN(datenew) as first_action_date
   FROM recent_actions
-  WHERE action = 'Applied'
+  WHERE action = 'Applied' OR action = 'Registered' or action = 'Approved'
   GROUP BY member
 )
 
@@ -79,6 +79,7 @@ WHERE
   AND c.email != '' 
   AND c.email LIKE '%@%'
   AND COALESCE(me.sendemails, true) = true
+  AND m.expires IS NOT NULL
 
 ORDER BY m.expires DESC
 LIMIT :max_list_size;
