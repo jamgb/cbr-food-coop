@@ -45,15 +45,15 @@ router.delete('/:id', hasRole('coordinator'), async (req, res) => {
 async function createMailchimp (membership, member, joinDate) {
   const email = member.email.toLowerCase()
 
-  // Calculate days left until expiry
-  const daysLeft = calculateDaysLeft(membership.expires)
+  // Calculate days left until expiry (one year from join date)
+  const daysLeft = calculateDaysLeft(membership.expires || DateTime.now().plus({ years: 1 }).toJSDate())
 
   // Determine tags for new signup
   const tags = determineSignupTags(member, membership)
 
   const memberDetails = {
     email_address: email,
-    status_if_new: 'subscribed',
+    status: 'subscribed',
     merge_fields: {
       FNAME: member.firstname || '',
       LNAME: member.lastname || '',
@@ -61,9 +61,9 @@ async function createMailchimp (membership, member, joinDate) {
       SUBURB: member.suburb || '',
       MTYPE: membership.membership_type_id || '',
       CONCESSION: member.concession_type || '',
-      EXPIRY: formatDateForMailchimp(membership.expires),
+      EXPIRY: formatDateForMailchimp(membership.expires || DateTime.now().plus({ years: 1 }).toJSDate()),
       DAYSLEFT: daysLeft,
-      DISCEXP: '', // New members don't have discount expiry
+      DISCEXP: '', // New members don't have discount until volunteering
       JOINED: formatDateForMailchimp(joinDate.toJSDate()),
       LASTVOL: '' // New members haven't volunteered yet
     },

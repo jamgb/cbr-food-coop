@@ -23,7 +23,8 @@
     "heroku-postbuild": "quasar build",
     "db": "docker run --rm -d --name dev-postgres -e POSTGRES_PASSWORD='Pass2021!' -v pgdata:/var/lib/postgresql/data -p 5432:5432 postgres",
     "db:shell": "docker exec -it dev-postgres psql -U postgres",
-    "db:stop": "docker stop dev-postgres"
+    "db:stop": "docker stop dev-postgres",
+    "mailchimp-run": "MAILCHIMP_API_KEY=\"$(heroku config:get MAILCHIMP_API_KEY -a cbrfoodcoop)\" MAILCHIMP_LIST_ID=\"$(heroku config:get MAILCHIMP_LIST_ID -a cbrfoodcoop)\" DATABASE_URL='postgres://postgres:Pass2021!@localhost:5432/postgres' MAILCHIMP_SERVER_PREFIX='us4' NODE_ENV=development node server.mjs"
   },
   "dependencies": {
     "@mailchimp/mailchimp_marketing": "^3.0.80",
