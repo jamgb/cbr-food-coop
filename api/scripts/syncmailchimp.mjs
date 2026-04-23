@@ -4,7 +4,7 @@ import fs from 'fs/promises'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import dotenv from 'dotenv'
-import { formatDateForMailchimp, calculateDaysLeft, emailHash, emailHash } from '../utils/mailchimp.mjs'
+import { formatDateForMailchimp, calculateDaysLeft, emailHash } from '../utils/mailchimp.mjs'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -20,7 +20,7 @@ const config = {
     listId: process.env.MAILCHIMP_LIST_ID
   },
   database: {
-    connectionString: process.env.DATABASE_URL || 'postgres://postgres:Pass2021!@localhost:5432/postgres',
+    connectionString: process.env.DATABASE_URL,
     ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
   },
   sync: {
@@ -104,30 +104,23 @@ async function getMembersFromDatabase (lookbackDays, maxListSize = config.sync.m
 function determineTags (member) {
   const tags = []
 
+  const daysUntilExpiry = calculateDaysLeft(member.expiry_date)
   // Membership status tags
-  if (member.membership_status === 'Active') {
-    const daysUntilExpiry = member.expiry_date
-      ? Math.floor((new Date(member.expiry_date) - new Date()) / (1000 * 60 * 60 * 24))
-      : null
-
-    if (daysUntilExpiry !== null && daysUntilExpiry < 1) {
+  if (member.membership_status === 'Active' && daysUntilExpiry !== null) {
+    if (daysUntilExpiry < 1) {
       tags.push('Expiring Today')
     }
-    if (daysUntilExpiry !== null && daysUntilExpiry < 7) {
+    if (daysUntilExpiry < 7) {
       tags.push('Expiring This Week')
     }
-    if (daysUntilExpiry !== null && daysUntilExpiry < 31) {
+    if (daysUntilExpiry < 31) {
       tags.push('Expiring This Month')
     }
-  } else if (member.membership_status === 'Expired') {
-    const daysSinceExpiry = member.expiry_date
-      ? Math.floor((new Date() - new Date(member.expiry_date)) / (1000 * 60 * 60 * 24))
-      : null
-
-    if (daysSinceExpiry !== null && daysSinceExpiry <= 90) {
+  } else if (member.membership_status === 'Expired' && daysUntilExpiry !== null) {
+    const daysSinceExpiry = daysUntilExpiry
+    tags.push('Expired')
+    if (daysSinceExpiry <= 90) {
       tags.push('Recently Expired')
-    } else {
-      tags.push('Expired')
     }
   }
 
@@ -169,58 +162,64 @@ function determineTags (member) {
  *
  * Note on join date preservation:
  * - Preserves JOINED date from Mailchimp if present (including for archived members who are unarchiving)
- * - Mailchimp preserves all member data when archiving, so unarchiving restores the join date
- * - Edge case: Members who expired long ago (outside priority list) and rejoin after initial sync
- *   may have inaccurate join dates if their original join predates the lookback window.
+ * - Mailchimp preserves all member data when archiving, so unarchiving restores the join date.
  */
 function formatMemberForMailchimp (member, existingMailchimpMember = null) {
-  const emailHash = emailHash(member.email)
+  const hash = emailHash(member.email)
 
   const tags = determineTags(member)
 
   // Preserve existing JOINED date if present in Mailchimp, otherwise use DB value
   const joinedDate = (existingMailchimpMember?.merge_fields?.JOINED && existingMailchimpMember.merge_fields.JOINED !== '')
     ? existingMailchimpMember.merge_fields.JOINED
-    : (member.first_action_date ? formatDate(member.first_action_date) : '')
+    : (member.first_action_date ? formatDateForMailchimp(member.first_action_date) : '')
 
-  // Preserve subscription status if member exists and is unsubscribed
-  const status = existingMailchimpMember
+  // Preserve subscription status if member exists and has a valid status
+  const validStatuses = ['subscribed', 'unsubscribed', 'cleaned', 'pending', 'transactional']
+  const status = (existingMailchimpMember && validStatuses.includes(existingMailchimpMember.status))
     ? existingMailchimpMember.status
     : 'subscribed'
 
+  // MailChimp does not accept null or undefined merge field values, so we default to empty strings
+  // even where the datatype is not a string (e.g. phone number or dates) to ensure the API
+  // call succeeds without validation errors.
+  const mergeFields = {
+    FNAME: member.firstname || '',
+    LNAME: member.lastname || '',
+    PHONE: member.phone || '',
+    SUBURB: member.suburb || '',
+    MTYPE: member.membership_type || '',
+    CONCESSION: member.concession_type || '',
+    JOINED: joinedDate,
+    LASTVOL: member.last_volunteered ? formatDateForMailchimp(member.last_volunteered) : ''
+  }
+
+  if (member.expiry_date) {
+    mergeFields.EXPIRY = formatDateForMailchimp(member.expiry_date)
+    const daysLeft = calculateDaysLeft(member.expiry_date)
+    if (daysLeft >= 0) {
+      mergeFields.DAYSLEFT = daysLeft
+    }
+  }
+
+  if (member.discount_expiry) {
+    mergeFields.DISCEXP = formatDateForMailchimp(member.discount_expiry)
+    const dDaysLeft = calculateDaysLeft(member.discount_expiry)
+    if (dDaysLeft >= 0) {
+      mergeFields.DDAYSLEFT = dDaysLeft
+    }
+  }
+
   const memberDetails = {
     email_address: member.email,
-    email_hash: emailHash,
+    email_hash: hash,
     status_if_new: 'subscribed',
     status: status, // Preserve existing status
-    merge_fields: {
-      FNAME: member.firstname || '',
-      LNAME: member.lastname || '',
-      PHONE: member.phone || '',
-      SUBURB: member.suburb || '',
-      MTYPE: member.membership_type || '',
-      CONCESSION: member.concession_type || '',
-      EXPIRY: member.expiry_date ? formatDate(member.expiry_date) : '',
-      DAYSLEFT: member.expiry_date
-        ? Math.floor((new Date(member.expiry_date) - new Date()) / (1000 * 60 * 60 * 24))
-        : null,
-      DISCEXP: member.discount_expiry ? formatDate(member.discount_expiry) : '',
-      JOINED: joinedDate,
-      LASTVOL: member.last_volunteered ? formatDate(member.last_volunteered) : ''
-    },
+    merge_fields: mergeFields,
     tags: tags,
     existingTags: existingMailchimpMember?.tags?.map(t => t.name) || []
   }
   return memberDetails
-}
-
-/**
- * Format date for Mailchimp (YYYY-MM-DD)
- */
-function formatDate (dateString) {
-  if (!dateString) return ''
-  const date = new Date(dateString)
-  return date.toISOString().split('T')[0]
 }
 
 /**
@@ -240,8 +239,6 @@ async function syncUnsubscribesToDatabase (mailchimpMembers, dbMembers) {
 
     const dbEmailsSet = new Set(dbMembers.map(m => m.email.toLowerCase()))
 
-    // Only update members that are in our database export
-    // Note: dbMembers already excludes members with sendemails=false (filtered in SQL)
     const emailsToUpdate = unsubscribedEmails.filter(email => dbEmailsSet.has(email))
 
     console.log(`Found ${unsubscribedEmails.length} unsubscribed members in Mailchimp`)
@@ -250,21 +247,6 @@ async function syncUnsubscribesToDatabase (mailchimpMembers, dbMembers) {
     if (emailsToUpdate.length === 0) {
       console.log('No unsubscribes to sync back to database')
       return { updated: 0 }
-    }
-
-    if (config.sync.dryRun) {
-      // In dry run, query to show what would be updated
-      const checkQuery = `
-        SELECT COUNT(*) as count
-        FROM customers c
-        LEFT JOIN members_extra me ON c.id = me.id
-        WHERE LOWER(TRIM(c.email)) = ANY($1::text[])
-      `
-      const checkResult = await client.query(checkQuery, [emailsToUpdate])
-      const membersFound = parseInt(checkResult.rows[0].count)
-
-      console.log(`DRY RUN - Would update ${membersFound} members' sendemails to false`)
-      return { updated: membersFound }
     }
 
     // Update sendemails field in members_extra table
@@ -306,14 +288,7 @@ async function archiveRemovedMembers (mailchimpMembers, dbMembers) {
 
   console.log(`Found ${membersToArchive.length} members to archive (outside priority list)`)
 
-  if (config.sync.dryRun) {
-    console.log('DRY RUN - Would archive these members:',
-      membersToArchive.slice(0, 5).map(m => m.email_address)
-    )
-    return { archived: membersToArchive.length }
-  }
-
-  // Archive in batches
+  // Archive in batches - in practice should never be more than one.
   const batches = []
   for (let i = 0; i < membersToArchive.length; i += config.sync.batchSize) {
     batches.push(membersToArchive.slice(i, i + config.sync.batchSize))
@@ -377,14 +352,6 @@ async function syncBatchToMailchimp (members) {
     }
   })
 
-  if (config.sync.dryRun) {
-    console.log('DRY RUN - Would sync batch:', {
-      count: members.length,
-      sample: members[0]
-    })
-    return { success: members.length, errors: 0 }
-  }
-
   try {
     const response = await mailchimp.batches.start({
       operations
@@ -400,37 +367,10 @@ async function syncBatchToMailchimp (members) {
       console.log(`Batch progress: ${batchStatus.finished_operations}/${batchStatus.total_operations}`)
     } while (batchStatus.status !== 'finished')
 
-    // If there were errors, fetch and display them
     if (batchStatus.errored_operations > 0) {
       console.error(`\n (!)  ${batchStatus.errored_operations} operations failed`)
-
-      // Download the response file to see error details
-      const responseUrl = batchStatus.response_body_url
-      if (responseUrl) {
-        console.log(`Error details available at: ${responseUrl}`)
-        console.log('Fetching error details...')
-
-        try {
-          const fetch = (await import('node-fetch')).default
-          const errorResponse = await fetch(responseUrl)
-          const errorData = await errorResponse.text()
-          const errors = errorData.split('\n')
-            .filter(line => line.trim())
-            .map(line => JSON.parse(line))
-            .filter(op => op.status_code !== 200)
-            .slice(0, 5) // Show first 5 errors
-
-          console.error('Sample errors:')
-          errors.forEach((err, idx) => {
-            console.error(`\nError ${idx + 1}:`)
-            console.error(`  Email: ${err.response?.email_address || 'unknown'}`)
-            console.error(`  Status: ${err.status_code}`)
-            console.error(`  Title: ${err.response?.title || 'unknown'}`)
-            console.error(`  Detail: ${err.response?.detail || 'unknown'}`)
-          })
-        } catch (fetchError) {
-          console.error('Could not fetch error details:', fetchError.message)
-        }
+      if (batchStatus.response_body_url) {
+        console.error(`Error details (tar.gz): ${batchStatus.response_body_url}`)
       }
     }
 
@@ -475,17 +415,6 @@ async function syncMailchimp () {
       return
     }
 
-    // Log sample member data for debugging
-    if (dbMembers.length > 0) {
-      console.log('\nSample database member:', {
-        email: dbMembers[0].email,
-        membership_status: dbMembers[0].membership_status,
-        expiry_date: dbMembers[0].expiry_date,
-        is_approved: dbMembers[0].is_approved,
-        concession_type: dbMembers[0].concession_type
-      })
-    }
-
     // Step 3: Sync unsubscribed status back to database
     console.log('\n=== Syncing unsubscribes back to database ===')
     await syncUnsubscribesToDatabase(mailchimpMembers, dbMembers)
@@ -496,17 +425,6 @@ async function syncMailchimp () {
       const existingMember = mailchimpMap.get(member.email.toLowerCase())
       return formatMemberForMailchimp(member, existingMember)
     })
-
-    // Log sample formatted member
-    if (formattedMembers.length > 0) {
-      console.log('\nSample formatted member:', {
-        email: formattedMembers[0].email_address,
-        status: formattedMembers[0].status,
-        status_if_new: formattedMembers[0].status_if_new,
-        tags: formattedMembers[0].tags,
-        merge_fields: formattedMembers[0].merge_fields
-      })
-    }
 
     // Step 5: Sync updates/additions to Mailchimp
     console.log('\n=== Syncing members to Mailchimp ===')
@@ -527,16 +445,16 @@ async function syncMailchimp () {
       totalErrors += result.errors
     }
 
-    console.log(`\n✅ Sync completed: ${totalSuccess} successful, ${totalErrors} errors`)
+    console.log(`\nSync completed: ${totalSuccess} successful, ${totalErrors} errors`)
 
     // Step 6: Archive members who are no longer in the priority list
     console.log('\n=== Archiving members outside priority list ===')
     const archiveResult = await archiveRemovedMembers(mailchimpMembers, dbMembers)
     console.log(`Archived ${archiveResult.archived} members`)
 
-    console.log('\n🎉 Mailchimp sync completed successfully!')
+    console.log('\nMailchimp sync completed successfully!')
   } catch (error) {
-    console.error('❌ Sync failed:', error)
+    console.error('Sync failed:', error)
     process.exit(1)
   }
 }

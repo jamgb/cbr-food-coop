@@ -46,7 +46,7 @@ async function createMailchimp (membership, member, joinDate) {
   const email = member.email.toLowerCase()
 
   // Calculate days left until expiry (one year from join date)
-  const daysLeft = calculateDaysLeft(membership.expires || DateTime.now().plus({ years: 1 }).toJSDate())
+  const daysUntilExpiry = calculateDaysLeft(membership.expires || DateTime.now().plus({ years: 1 }).toJSDate())
 
   // Determine tags for new signup
   const tags = determineSignupTags(member, membership)
@@ -62,7 +62,7 @@ async function createMailchimp (membership, member, joinDate) {
       MTYPE: membership.membership_type_id || '',
       CONCESSION: member.concession_type || '',
       EXPIRY: formatDateForMailchimp(membership.expires || DateTime.now().plus({ years: 1 }).toJSDate()),
-      DAYSLEFT: daysLeft,
+      DAYSLEFT: daysUntilExpiry,
       DISCEXP: '', // New members don't have discount until volunteering
       JOINED: formatDateForMailchimp(joinDate.toJSDate()),
       LASTVOL: '' // New members haven't volunteered yet
@@ -81,18 +81,22 @@ async function createMailchimp (membership, member, joinDate) {
       process.env.MAILCHIMP_LIST_ID,
       memberDetails
     )
-    console.log('✅ Mailchimp member created successfully:', {
-      email: result.email_address,
-      id: result.id,
-      status: result.status
-    })
     return result
   } catch (error) {
-    console.error('❌ Failed to create Mailchimp member:', {
+    const body = error.response?.body
+    const isMemberExists = error.status === 400 && body?.title === 'Member Exists'
+
+    if (isMemberExists) {
+      // Member already on the list — nothing to do for new signups
+      console.warn('Mailchimp member already exists, skipping:', memberDetails.email_address)
+      return
+    }
+
+    console.error('Failed to create Mailchimp member:', {
       email: memberDetails.email_address,
-      error: error.message,
       status: error.status,
-      response: error.response?.body || error.response?.text
+      title: body?.title,
+      detail: body?.detail
     })
     throw error
   }
@@ -154,16 +158,19 @@ export async function getNextMembershipId () {
 
 async function createMember (joinDate, membership, member) {
   // Only create in Mailchimp if sendemails is not explicitly false
+  let mailchimpWarning = null
   if (member.sendemails !== false) {
     try {
       await createMailchimp(membership, member, joinDate)
     } catch (e) {
       console.error('Failed to sync new member to Mailchimp:', {
         email: member.email,
+        status: e.status,
         error: e.message
       })
       // Note: Member will be picked up by next sync script run if Mailchimp sync fails here
       // Continue with member creation even if Mailchimp fails
+      mailchimpWarning = `Mailchimp sync failed for ${member.email}: ${e.message}`
     }
   }
 
@@ -210,7 +217,7 @@ async function createMember (joinDate, membership, member) {
     ]
   )
 
-  return newMember[0]
+  return { ...newMember[0], mailchimpWarning }
 }
 
 /**
@@ -259,9 +266,11 @@ router.post('/:id/member', hasRole('coordinator'), async (req, res) => {
 
     // delete the signup
     await deleteSignup(req.params.id)
+    const warnings = members.map(m => m.mailchimpWarning).filter(Boolean)
     res.json({
       ...membership[0],
-      members
+      members,
+      ...(warnings.length ? { warnings } : {})
     })
   } catch (err) {
     console.log(err)
