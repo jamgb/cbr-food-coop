@@ -198,8 +198,6 @@ yarn sync-mailchimp
 | `MAILCHIMP_LIST_ID` | The audience/list ID |
 | `MAILCHIMP_MAX_LIST_SIZE` | Max members to sync (default: 2000, mailchimp membership tier increases at 2500) |
 | `LOOKBACK_DAYS` | How many days back to look for changes (default: 7, use `18250` for full history) |
-| `DRY_RUN` | Set to `true` to log changes without applying them |
-
 # Roadmap
 
 ## Stage 1

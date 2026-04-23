@@ -26,7 +26,6 @@ const config = {
   sync: {
     lookbackDays: parseInt(process.env.LOOKBACK_DAYS || '7'),
     batchSize: 500, // Mailchimp batch operations limit
-    dryRun: process.env.DRY_RUN === 'true',
     maxListSize: process.env.MAILCHIMP_MAX_LIST_SIZE ? parseInt(process.env.MAILCHIMP_MAX_LIST_SIZE) : 1000
   }
 }
@@ -117,9 +116,9 @@ function determineTags (member) {
       tags.push('Expiring This Month')
     }
   } else if (member.membership_status === 'Expired' && daysUntilExpiry !== null) {
-    const daysSinceExpiry = daysUntilExpiry
+    const daysSinceExpiry = -daysUntilExpiry
     tags.push('Expired')
-    if (daysSinceExpiry <= 90) {
+    if (daysSinceExpiry <= 90 && daysSinceExpiry >= 0) {
       tags.push('Recently Expired')
     }
   }
@@ -392,7 +391,6 @@ async function syncMailchimp () {
   console.log('Configuration:', {
     lookbackDays: config.sync.lookbackDays,
     batchSize: config.sync.batchSize,
-    dryRun: config.sync.dryRun,
     maxListSize: config.sync.maxListSize
   })
 
