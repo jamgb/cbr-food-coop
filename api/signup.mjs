@@ -70,12 +70,6 @@ async function createMailchimp (membership, member, joinDate) {
     tags: tags
   }
 
-  console.log('Creating Mailchimp member:', {
-    email: memberDetails.email_address,
-    merge_fields: memberDetails.merge_fields,
-    tags: memberDetails.tags
-  })
-
   try {
     const result = await mailchimp.lists.addListMember(
       process.env.MAILCHIMP_LIST_ID,
