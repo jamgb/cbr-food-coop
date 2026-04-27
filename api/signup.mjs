@@ -184,7 +184,7 @@ async function createMember (joinDate, membership, member) {
       member.phone, // $8 - customers.phone
       joinDate.toString(), // $9 - customers.curdate
       true, // $10 - customers.visible
-      membership[0].membership_id, // $11 - customers.membership_id
+      membership.membership_id, // $11 - customers.membership_id
       member.vend_id // $12 - customers.vend_id
     ]
   )
@@ -255,7 +255,7 @@ router.post('/:id/member', hasRole('coordinator'), async (req, res) => {
 
     // Create the members
     const membersToCreate = await query('SELECT * from signup_members WHERE signup_id = $1', [req.params.id])
-    const members = await Promise.all(membersToCreate.map(member => createMember(joinDate, membership, member)))
+    const members = await Promise.all(membersToCreate.map(member => createMember(joinDate, membership[0], member)))
       .catch(e => { return res.sendStatus(e.status) })
 
     // delete the signup
