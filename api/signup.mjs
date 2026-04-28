@@ -45,12 +45,9 @@ router.delete('/:id', hasRole('coordinator'), async (req, res) => {
 async function createMailchimp (membership, member, joinDate) {
   const email = member.email.toLowerCase()
 
-  // Calculate days left until expiry (one year from join date)
-  const daysUntilExpiry = calculateDaysLeft(membership.expires || DateTime.now().plus({ years: 1 }).toJSDate())
-
   // Determine tags for new signup
   const tags = determineSignupTags(member, membership)
-
+  
   const memberDetails = {
     email_address: email,
     status: 'subscribed',
@@ -59,13 +56,12 @@ async function createMailchimp (membership, member, joinDate) {
       LNAME: member.lastname || '',
       PHONE: member.phone || '',
       SUBURB: member.suburb || '',
-      MTYPE: membership.membership_type_id || '',
-      CONCESSION: member.concession_type || '',
+      MTYPE: membership.membership_type_label || String(membership.membership_type_id || ''),
+      CONCESSION: membership.concession || '',
       EXPIRY: formatDateForMailchimp(membership.expires || DateTime.now().plus({ years: 1 }).toJSDate()),
-      DAYSLEFT: daysUntilExpiry,
-      DISCEXP: '', // New members don't have discount until volunteering
-      JOINED: formatDateForMailchimp(joinDate.toJSDate()),
-      LASTVOL: '' // New members haven't volunteered yet
+      DAYSLEFT: calculateDaysLeft(membership.expires || DateTime.now().plus({ years: 1 }).toJSDate()),
+      JOINED: formatDateForMailchimp(joinDate.toJSDate())
+      // DDAYSLEFT, DISCEXP, LASTVOL omitted — new members have no discount/volunteer history
     },
     tags: tags
   }
@@ -90,7 +86,8 @@ async function createMailchimp (membership, member, joinDate) {
       email: memberDetails.email_address,
       status: error.status,
       title: body?.title,
-      detail: body?.detail
+      detail: body?.detail,
+      memberDetails: memberDetails
     })
     throw error
   }
@@ -225,11 +222,14 @@ router.post('/:id/member', hasRole('coordinator'), async (req, res) => {
       return res.status(400).send('Invalid paid (Must be a number)')
     }
     const signup = await query('SELECT * from signup WHERE id = $1', [req.params.id])
+
     if (!Array.isArray(signup) || !signup.length) return res.sendStatus(404)
 
     // Create membership
     const joinDate = DateTime.now()
     const membershipId = await getNextMembershipId()
+    const membershipTypes = await query('SELECT * FROM membership_types WHERE membership_type_id = $1', [signup[0].membership_type_id])
+    const membershipTypeLabel = membershipTypes[0]?.label || String(signup[0].membership_type_id)
     const membership = await query(
       'INSERT into memberships (membership_id, membership_type_id, concession, expires) VALUES ($1, $2, $3, $4) RETURNING *',
       [
@@ -255,7 +255,8 @@ router.post('/:id/member', hasRole('coordinator'), async (req, res) => {
 
     // Create the members
     const membersToCreate = await query('SELECT * from signup_members WHERE signup_id = $1', [req.params.id])
-    const members = await Promise.all(membersToCreate.map(member => createMember(joinDate, membership[0], member)))
+    const membershipWithLabel = { ...membership[0], membership_type_label: membershipTypeLabel }
+    const members = await Promise.all(membersToCreate.map(member => createMember(joinDate, membershipWithLabel, member)))
       .catch(e => { return res.sendStatus(e.status) })
 
     // delete the signup

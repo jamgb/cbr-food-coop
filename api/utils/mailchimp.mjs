@@ -121,8 +121,7 @@ export function formatMemberForMailchimp (member, existingMailchimpMember = null
     SUBURB: member.suburb || '',
     MTYPE: member.membership_type || '',
     CONCESSION: member.concession_type || '',
-    JOINED: joinedDate,
-    LASTVOL: member.last_volunteered ? formatDateForMailchimp(member.last_volunteered) : ''
+    JOINED: joinedDate
   }
 
   if (member.expiry_date) {
@@ -135,6 +134,7 @@ export function formatMemberForMailchimp (member, existingMailchimpMember = null
 
   if (member.discount_expiry) {
     mergeFields.DISCEXP = formatDateForMailchimp(member.discount_expiry)
+    mergeFields.LASTVOL = member.last_volunteered ? formatDateForMailchimp(member.last_volunteered) : ''
     const dDaysLeft = calculateDaysLeft(member.discount_expiry)
     if (dDaysLeft >= 0) {
       mergeFields.DDAYSLEFT = dDaysLeft
