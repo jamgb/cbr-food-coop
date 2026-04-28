@@ -22,7 +22,7 @@ router.get('/', hasRole('coordinator'), async (req, res) => {
     }
     res.send(signups)
   } catch (err) {
-    console.log(err)
+    console.error(err)
     return res.sendStatus(500)
   }
 })
@@ -37,7 +37,7 @@ router.delete('/:id', hasRole('coordinator'), async (req, res) => {
     await deleteSignup(req.params.id)
     res.sendStatus(204)
   } catch (err) {
-    console.log(err)
+    console.error(err)
     return res.sendStatus(500)
   }
 })
@@ -268,7 +268,7 @@ router.post('/:id/member', hasRole('coordinator'), async (req, res) => {
       ...(warnings.length ? { warnings } : {})
     })
   } catch (err) {
-    console.log(err)
+    console.error(err)
     return res.sendStatus(500)
   }
 })
