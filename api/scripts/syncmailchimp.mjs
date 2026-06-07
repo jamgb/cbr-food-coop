@@ -21,13 +21,20 @@ const config = {
   },
   database: {
     connectionString: process.env.DATABASE_URL,
-    ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
+    ssl: {
+      rejectUnauthorized: false
+    }
   },
   sync: {
     lookbackDays: parseInt(process.env.LOOKBACK_DAYS || '7'),
     batchSize: 500, // Mailchimp batch operations limit
     maxListSize: process.env.MAILCHIMP_MAX_LIST_SIZE ? parseInt(process.env.MAILCHIMP_MAX_LIST_SIZE) : 1000
   }
+}
+
+// don't use SSL in development
+if (process.env.NODE_ENV === 'development') {
+  delete config.database.ssl
 }
 
 // Initialize Mailchimp client
