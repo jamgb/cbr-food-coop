@@ -134,7 +134,8 @@ export function formatMemberForMailchimp (member, existingMailchimpMember = null
 
   if (member.discount_expiry) {
     mergeFields.DISCEXP = formatDateForMailchimp(member.discount_expiry)
-    mergeFields.LASTVOL = member.last_volunteered ? formatDateForMailchimp(member.last_volunteered) : ''
+    const previousLastVolunteered = existingMailchimpMember?.merge_fields?.LASTVOL ?? ''
+    mergeFields.LASTVOL = member.last_volunteered ? formatDateForMailchimp(member.last_volunteered) : previousLastVolunteered
     const dDaysLeft = calculateDaysLeft(member.discount_expiry)
     mergeFields.DDAYSLEFT = Math.max(dDaysLeft, 0)
   }
