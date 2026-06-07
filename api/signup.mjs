@@ -86,8 +86,8 @@ async function createMailchimp (membership, member, joinDate) {
       email: memberDetails.email_address,
       status: error.status,
       title: body?.title,
-      detail: body?.detail,
-      memberDetails: memberDetails
+      detail: body?.detail
+      // memberDetails: memberDetails
     })
     throw error
   }
