@@ -20,6 +20,15 @@
       >
         <q-tooltip> Creates a temporary approval-sheet to be approved straight away.</q-tooltip>
       </q-btn>
+      <q-btn
+        v-if="selected.length && isAdmin"
+        class="q-ml-sm"
+        color="negative"
+        label="Delete Selected Membership Applicants"
+        :loading="deleting"
+        :disable="working || deleting"
+        @click="confirmDeleteSelectedApplicants"
+      />
     </div>
   </q-page>
   <q-dialog v-model="approvalSheet">
@@ -67,6 +76,19 @@
 
       <q-separator />
 
+      <q-card-actions align="left">
+        <q-btn
+          flat
+          color="secondary"
+          icon="picture_as_pdf"
+          label="Download approval sheet as PDF"
+          :disabled="working || deleting || !selected.length"
+          @click="downloadApprovalSheetPdf"
+        />
+      </q-card-actions>
+
+      <q-separator />
+
       <q-card-actions align="right">
         <q-btn
           flat
@@ -89,11 +111,16 @@
 </template>
 
 <script>
+import {
+  buildApprovalSheetText,
+  downloadApprovalSheetAsPdf
+} from '../utils/approvalSheetPdf'
 
 export default {
   data () {
     return {
       working: false,
+      deleting: false,
       selected: [],
       approvalSheet: false,
       signedby1: null,
@@ -102,6 +129,9 @@ export default {
     }
   },
   computed: {
+    isAdmin () {
+      return this.$store.state.members.user?.role === 'admin'
+    },
     memberList () {
       return this.$store.getters['members/toBeApproved']
     },
@@ -138,6 +168,64 @@ export default {
     }
   },
   methods: {
+    async downloadApprovalSheetPdf () {
+      try {
+        const content = buildApprovalSheetText({
+          selected: this.selected,
+          signedby1: this.signedby1,
+          signedby2: this.signedby2,
+          notes: this.notes
+        })
+
+        await downloadApprovalSheetAsPdf({
+          content,
+          title: 'Approval Sheet'
+        })
+      } catch (err) {
+        this.$q.notify({
+          color: 'red-4',
+          textColor: 'white',
+          icon: 'error',
+          message: 'Failed to download approval sheet PDF.'
+        })
+      }
+    },
+    async confirmDeleteSelectedApplicants () {
+      this.$q.dialog({
+        title: 'Delete selected applicants?',
+        message: `This will mark ${this.selected.length} selected applicants as deleted and hide them from this list.`,
+        cancel: true,
+        persistent: true,
+        ok: {
+          color: 'negative',
+          label: 'Delete'
+        }
+      }).onOk(async () => {
+        await this.deleteSelectedApplicants()
+      })
+    },
+    async deleteSelectedApplicants () {
+      this.deleting = true
+      try {
+        const membersToDelete = [...this.selected]
+        await Promise.all(membersToDelete.map(member => this.$store.dispatch('members/deleteMember', member.id)))
+        this.selected = []
+        this.$q.notify({
+          color: 'green-4',
+          textColor: 'white',
+          icon: 'cloud_done',
+          message: 'Selected applicants marked as deleted'
+        })
+      } catch (err) {
+        this.$q.notify({
+          color: 'red-4',
+          textColor: 'white',
+          icon: 'error',
+          message: 'Error: failed to delete selected applicants'
+        })
+      }
+      this.deleting = false
+    },
     async submitApprovalSheet (evt) {
       this.working = true
       try {

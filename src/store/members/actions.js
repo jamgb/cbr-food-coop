@@ -132,6 +132,15 @@ export async function updateMemberDetails (context, member) {
   context.commit('updateMemberDetails', member)
 }
 
+export async function deleteMember (context, memberId) {
+  await api.delete(`/api/members/${memberId}`, {
+    headers: {
+      authorization: 'Bearer ' + context.state.token
+    }
+  })
+  await context.dispatch('getMembers')
+}
+
 export async function setFirstShop (context, member) {
   await api.put(`/api/memberships/${member.membership_id}`, member, {
     headers: {

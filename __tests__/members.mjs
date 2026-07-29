@@ -8,8 +8,12 @@ const mockDatabase = {
 // Jest >= 27.1.1
 jest.unstable_mockModule('../api/database.mjs', () => mockDatabase)
 
-const { updateVolunteerHours } = await import('../api/members.mjs')
+const { updateVolunteerHours, markMemberDeleted } = await import('../api/members.mjs')
 const { getNextMemberId, getNextMembershipId } = await import('../api/signup.mjs')
+
+beforeEach(() => {
+  mockDatabase.query.mockReset()
+})
 
 it('should update the hours correctly', async () => {
   mockDatabase.query.mockResolvedValueOnce([{ membership_id: 'ms_id' }])
@@ -51,4 +55,30 @@ it('should calculate the next membership ID', async () => {
   mockDatabase.query.mockResolvedValueOnce([{ max: 'm5099' }])
   const id = await getNextMembershipId()
   expect(id).toEqual('m5100')
+})
+
+it('should mark member deleted and append history', async () => {
+  mockDatabase.query.mockResolvedValueOnce([{ id: 'c10', visible: true }])
+  mockDatabase.query.mockResolvedValueOnce()
+  mockDatabase.query.mockResolvedValueOnce()
+
+  const result = await markMemberDeleted('c10', 'Admin User')
+
+  expect(result).toEqual({ status: 'deleted' })
+  expect(mockDatabase.query).toHaveBeenCalledTimes(3)
+  expect(mockDatabase.query.mock.calls[1][0]).toContain('UPDATE customers SET visible = false')
+  expect(mockDatabase.query.mock.calls[1][1]).toEqual(['c10'])
+  expect(mockDatabase.query.mock.calls[2][0]).toContain('INSERT into members_history')
+  expect(mockDatabase.query.mock.calls[2][1][2]).toEqual('c10')
+  expect(mockDatabase.query.mock.calls[2][1][3]).toEqual('Deleted')
+  expect(mockDatabase.query.mock.calls[2][1][5]).toEqual('Marked as deleted by Admin User')
+})
+
+it('should skip history if member is already deleted', async () => {
+  mockDatabase.query.mockResolvedValueOnce([{ id: 'c10', visible: false }])
+
+  const result = await markMemberDeleted('c10', 'Admin User')
+
+  expect(result).toEqual({ status: 'already-deleted' })
+  expect(mockDatabase.query).toHaveBeenCalledTimes(1)
 })

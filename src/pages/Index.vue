@@ -37,7 +37,7 @@ export default {
   components: { ListWithFilter },
   computed: {
     members () {
-      return this.$store.state.members.members
+      return this.$store.state.members.members.filter(member => member.visible !== false)
     },
     now () {
       return new Date()

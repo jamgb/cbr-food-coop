@@ -6,7 +6,7 @@ import { hasRole } from './utils.mjs'
 
 const router = express.Router()
 const ACTIONS = ['Applied', 'Registered', 'Approved', 'Volunteered',
-  'Renewed'] // This probably ought to be moved elsewhere.
+  'Renewed', 'Deleted'] // This probably ought to be moved elsewhere.
 const DAYS_DISCOUNT_PER_HOUR_WORKED = 14
 const memberProps = ['name', 'address', 'city', 'postal', 'email', 'phone']
 
@@ -38,9 +38,13 @@ function pluck (props, obj) {
   {})
 }
 
+function isValidMemberId (memberId) {
+  return /^c[0-9]*$/.test(memberId)
+}
+
 router.get('/', hasRole('coordinator'), async (req, res) => {
   try {
-    const results = await query('SELECT id, name, address, city, postal, membership_id, vend_id, email, phone, firstname, lastname, expires, discvaliduntil, first_shop, approved FROM customers NATURAL JOIN memberships')
+    const results = await query('SELECT id, name, address, city, postal, membership_id, vend_id, email, phone, firstname, lastname, expires, discvaliduntil, first_shop, approved, visible FROM customers NATURAL JOIN memberships WHERE visible = true')
     res.send(results)
   } catch (err) {
     console.error(err)
@@ -50,6 +54,9 @@ router.get('/', hasRole('coordinator'), async (req, res) => {
 
 router.put('/:id', hasRole('coordinator'), async (req, res) => {
   try {
+    if (!isValidMemberId(req.params.id)) {
+      return res.status(400).send('Invalid member ID')
+    }
     // pluck out the valid props from the body
     const obj = pluck(memberProps, req.body)
     if (Object.keys(obj).length === 0) return res.sendStatus(400)
@@ -63,9 +70,46 @@ router.put('/:id', hasRole('coordinator'), async (req, res) => {
   }
 })
 
+export async function markMemberDeleted (memberId, actorName) {
+  const members = await query('SELECT id, visible FROM customers WHERE id = $1', [memberId])
+  if (!members.length) return { status: 'not-found' }
+  if (members[0].visible === false) return { status: 'already-deleted' }
+
+  const dateDeleted = DateTime.now().toString()
+  await query('UPDATE customers SET visible = false WHERE id = $1', [memberId])
+  await query(
+    'INSERT into members_history (id, datenew, member, action, amountpaid, notes) values($1, $2, $3, $4, $5, $6)',
+    [
+      randomUUID(),
+      dateDeleted,
+      memberId,
+      'Deleted',
+      null,
+      `Marked as deleted by ${actorName}`
+    ]
+  )
+
+  return { status: 'deleted' }
+}
+
+router.delete('/:id', hasRole('admin'), async (req, res) => {
+  try {
+    if (!isValidMemberId(req.params.id)) {
+      return res.status(400).send('Invalid member ID')
+    }
+    const actorName = req.user.name || req.user.email || 'Unknown user'
+    const result = await markMemberDeleted(req.params.id, actorName)
+    if (result.status === 'not-found') return res.sendStatus(404)
+    return res.sendStatus(204)
+  } catch (err) {
+    console.error(err)
+    return res.sendStatus(500)
+  }
+})
+
 router.get('/:id/history', hasRole('coordinator'), async (req, res) => {
   try {
-    if (!/^c[0-9]*$/.test(req.params.id)) {
+    if (!isValidMemberId(req.params.id)) {
       return res.status(400).send('')
     }
     const results = await query('SELECT datenew, action, amountpaid, notes FROM members_history WHERE member = $1 ORDER BY datenew DESC', [req.params.id])
@@ -120,7 +164,7 @@ export async function updateVolunteerHours (memberId, hoursWorked) {
  */
 router.post('/:id/history', hasRole('coordinator'), async (req, res) => {
   try {
-    if (!/^c[0-9]*$/.test(req.params.id)) {
+    if (!isValidMemberId(req.params.id)) {
       return res.status(400).send('Invalid member ID')
     }
     if (!Number.isFinite(req.body.paid)) {
