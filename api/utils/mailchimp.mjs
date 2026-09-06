@@ -14,7 +14,11 @@ export function formatDateForMailchimp (dateString) {
  */
 export function calculateDaysLeft (expiryDate) {
   if (!expiryDate) return null
-  return Math.floor((new Date(expiryDate) - new Date()) / (1000 * 60 * 60 * 24))
+  const expiry = new Date(expiryDate)
+  const today = new Date()
+  const expiryDay = Date.UTC(expiry.getFullYear(), expiry.getMonth(), expiry.getDate())
+  const todayDay = Date.UTC(today.getFullYear(), today.getMonth(), today.getDate())
+  return Math.round((expiryDay - todayDay) / (1000 * 60 * 60 * 24))
 }
 
 /**
@@ -100,6 +104,9 @@ export function formatMemberForMailchimp (member, existingMailchimpMember = null
 
   const tags = determineTags(member)
 
+  const expiryDaysLeft = member.expiry_date ? calculateDaysLeft(member.expiry_date) : null
+  const discountDaysLeft = member.discount_expiry ? calculateDaysLeft(member.discount_expiry) : null
+
   // Preserve existing JOINED date if present in Mailchimp, otherwise use DB value
   const joinedDate = (existingMailchimpMember?.merge_fields?.JOINED && existingMailchimpMember.merge_fields.JOINED !== '')
     ? existingMailchimpMember.merge_fields.JOINED
@@ -121,23 +128,12 @@ export function formatMemberForMailchimp (member, existingMailchimpMember = null
     SUBURB: member.suburb || '',
     MTYPE: member.membership_type || '',
     CONCESSION: member.concession_type || '',
-    JOINED: joinedDate
-  }
-
-  if (member.expiry_date) {
-    mergeFields.EXPIRY = formatDateForMailchimp(member.expiry_date)
-    const daysLeft = calculateDaysLeft(member.expiry_date)
-    if (daysLeft >= 0) {
-      mergeFields.DAYSLEFT = daysLeft
-    }
-  }
-
-  if (member.discount_expiry) {
-    mergeFields.DISCEXP = formatDateForMailchimp(member.discount_expiry)
-    const previousLastVolunteered = existingMailchimpMember?.merge_fields?.LASTVOL ?? ''
-    mergeFields.LASTVOL = member.last_volunteered ? formatDateForMailchimp(member.last_volunteered) : previousLastVolunteered
-    const dDaysLeft = calculateDaysLeft(member.discount_expiry)
-    mergeFields.DDAYSLEFT = Math.max(dDaysLeft, 0)
+    JOINED: joinedDate,
+    EXPIRY: member.expiry_date ? formatDateForMailchimp(member.expiry_date) : '',
+    DAYSLEFT: expiryDaysLeft !== null && expiryDaysLeft >= 0 ? expiryDaysLeft : '',
+    DISCEXP: member.discount_expiry ? formatDateForMailchimp(member.discount_expiry) : '',
+    DDAYSLEFT: discountDaysLeft !== null ? Math.max(discountDaysLeft, 0) : '',
+    LASTVOL: member.last_volunteered ? formatDateForMailchimp(member.last_volunteered) : ''
   }
 
   return {

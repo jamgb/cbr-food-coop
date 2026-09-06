@@ -43,6 +43,13 @@ mailchimp.setConfig({
   server: config.mailchimp.server
 })
 
+const PRESERVED_TAGS = new Set(
+  (process.env.MAILCHIMP_PRESERVE_TAGS || '')
+    .split(',')
+    .map(tag => tag.trim())
+    .filter(Boolean)
+)
+
 /**
  * Get all members from Mailchimp list (with pagination)
  */
@@ -214,12 +221,13 @@ async function archiveRemovedMembers (mailchimpMembers, dbMembers) {
  * Sync members to Mailchimp in batches
  */
 async function syncBatchToMailchimp (members) {
-  const operations = members.map(member => {
+  const operations = []
+
+  members.forEach(member => {
     const body = {
       email_address: member.email_address,
       status_if_new: member.status_if_new,
-      merge_fields: member.merge_fields,
-      tags: member.tags // Always include tags, even if empty array
+      merge_fields: member.merge_fields
     }
 
     // Only set status if member already exists (to preserve unsubscribed status)
@@ -227,11 +235,25 @@ async function syncBatchToMailchimp (members) {
       body.status = member.status
     }
 
-    return {
+    operations.push({
       method: 'PUT',
       path: `/lists/${config.mailchimp.listId}/members/${member.email_hash}`,
       body: JSON.stringify(body)
-    }
+    })
+
+    const desiredTags = new Set(member.tags || [])
+    const existingTags = new Set(member.existingTags || [])
+    const tagsToDeactivate = [...existingTags].filter(tag => !desiredTags.has(tag) && !PRESERVED_TAGS.has(tag))
+    const tagOps = [
+      ...[...desiredTags].map(name => ({ name, status: 'active' })),
+      ...tagsToDeactivate.map(name => ({ name, status: 'inactive' }))
+    ]
+
+    operations.push({
+      method: 'POST',
+      path: `/lists/${config.mailchimp.listId}/members/${member.email_hash}/tags`,
+      body: JSON.stringify({ tags: tagOps })
+    })
   })
 
   try {
@@ -310,8 +332,10 @@ async function syncMailchimp () {
     // Step 5: Sync updates/additions to Mailchimp
     console.log('\n=== Syncing members to Mailchimp ===')
     const batches = []
-    for (let i = 0; i < formattedMembers.length; i += config.sync.batchSize) {
-      batches.push(formattedMembers.slice(i, i + config.sync.batchSize))
+    // Each member generates two Mailchimp operations (PUT member + POST tags).
+    const maxMembersPerBatch = Math.max(1, Math.floor(config.sync.batchSize / 2))
+    for (let i = 0; i < formattedMembers.length; i += maxMembersPerBatch) {
+      batches.push(formattedMembers.slice(i, i + maxMembersPerBatch))
     }
 
     console.log(`Syncing ${formattedMembers.length} members in ${batches.length} batches`)
