@@ -26,7 +26,6 @@ const config = {
     }
   },
   sync: {
-    lookbackDays: parseInt(process.env.LOOKBACK_DAYS || '7'),
     batchSize: 500, // Mailchimp batch operations limit
     maxListSize: process.env.MAILCHIMP_MAX_LIST_SIZE ? parseInt(process.env.MAILCHIMP_MAX_LIST_SIZE) : 1000
   }
@@ -89,7 +88,7 @@ async function getAllMailchimpMembers () {
 /**
  * Get member data from database
  */
-async function getMembersFromDatabase (lookbackDays, maxListSize = config.sync.maxListSize) {
+async function getMembersFromDatabase (maxListSize = config.sync.maxListSize) {
   const client = new pg.Client({
     connectionString: config.database.connectionString,
     ssl: config.database.ssl
@@ -101,7 +100,7 @@ async function getMembersFromDatabase (lookbackDays, maxListSize = config.sync.m
     let sql = await fs.readFile(sqlPath, 'utf-8')
 
     // Replace parameters
-    sql = sql.replace(':lookback_days', lookbackDays.toString()).replace(':max_list_size', maxListSize.toString())
+    sql = sql.replace(':max_list_size', maxListSize.toString())
 
     const result = await client.query(sql)
     console.log(`Retrieved ${result.rows.length} members from database`)
@@ -309,7 +308,6 @@ async function syncBatchToMailchimp (members) {
 async function syncMailchimp () {
   console.log('Starting Mailchimp sync...')
   console.log('Configuration:', {
-    lookbackDays: config.sync.lookbackDays,
     batchSize: config.sync.batchSize,
     maxListSize: config.sync.maxListSize
   })
@@ -325,7 +323,7 @@ async function syncMailchimp () {
 
     // Step 2: Get priority members from database
     console.log('\n=== Fetching members from database ===')
-    const dbMembers = await getMembersFromDatabase(config.sync.lookbackDays, config.sync.maxListSize)
+    const dbMembers = await getMembersFromDatabase(config.sync.maxListSize)
     console.log(`Found ${dbMembers.length} members in database export`)
 
     if (dbMembers.length === 0) {
