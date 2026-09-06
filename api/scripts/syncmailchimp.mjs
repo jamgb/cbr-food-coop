@@ -274,7 +274,7 @@ async function syncBatchToMailchimp (members) {
     const existingTags = new Set(member.existingTags || [])
     const tagsToDeactivate = [...existingTags].filter(tag => !desiredTags.has(tag) && !PRESERVED_TAGS.has(tag))
     const tagOps = [
-      ...[...desiredTags].map(name => ({ name, status: 'active' })),
+      ...[...desiredTags].filter(name => !existingTags.has(name)).map(name => ({ name, status: 'active' }))
       ...tagsToDeactivate.map(name => ({ name, status: 'inactive' }))
     ]
 
