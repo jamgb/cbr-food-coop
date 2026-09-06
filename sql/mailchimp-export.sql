@@ -1,25 +1,20 @@
 -- Member data export for Mailchimp
--- Parameter: lookback_days - how far back to check for volunteer activity
--- Usage: 
---   Initial sync: lookback_days = 18250 (50 years)
---   Daily sync: lookback_days = 1
---   Weekly sync: lookback_days = 7
+-- Note: this query intentionally reconciles from full membership history
+-- so that Mailchimp fields and tags do not drift over time.
 
-WITH recent_actions AS (
+WITH historical_actions AS (
   SELECT 
     member,
     datenew,
     action
   FROM members_history
-  WHERE 
-    datenew > CURRENT_TIMESTAMP - INTERVAL ':lookback_days days'
 ), 
 
 volunteer_last_date AS (
   SELECT 
     member,
     MAX(datenew) as last_volunteer_date
-  FROM recent_actions   
+  FROM historical_actions
   WHERE action = 'Volunteered'
   GROUP BY member
 ),
@@ -30,7 +25,7 @@ earliest_action AS (
   SELECT 
     member,
     MIN(datenew) as first_action_date
-  FROM recent_actions
+  FROM historical_actions
   WHERE action = 'Applied' OR action = 'Registered' or action = 'Approved'
   GROUP BY member
 )

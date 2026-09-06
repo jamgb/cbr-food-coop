@@ -26,7 +26,6 @@ const config = {
     }
   },
   sync: {
-    lookbackDays: parseInt(process.env.LOOKBACK_DAYS || '7'),
     batchSize: 500, // Mailchimp batch operations limit
     maxListSize: process.env.MAILCHIMP_MAX_LIST_SIZE ? parseInt(process.env.MAILCHIMP_MAX_LIST_SIZE) : 1000
   }
@@ -42,6 +41,13 @@ mailchimp.setConfig({
   apiKey: config.mailchimp.apiKey,
   server: config.mailchimp.server
 })
+
+const PRESERVED_TAGS = new Set(
+  (process.env.MAILCHIMP_PRESERVE_TAGS || '')
+    .split(',')
+    .map(tag => tag.trim())
+    .filter(Boolean)
+)
 
 /**
  * Get all members from Mailchimp list (with pagination)
@@ -82,7 +88,7 @@ async function getAllMailchimpMembers () {
 /**
  * Get member data from database
  */
-async function getMembersFromDatabase (lookbackDays, maxListSize = config.sync.maxListSize) {
+async function getMembersFromDatabase (maxListSize = config.sync.maxListSize) {
   const client = new pg.Client({
     connectionString: config.database.connectionString,
     ssl: config.database.ssl
@@ -94,7 +100,7 @@ async function getMembersFromDatabase (lookbackDays, maxListSize = config.sync.m
     let sql = await fs.readFile(sqlPath, 'utf-8')
 
     // Replace parameters
-    sql = sql.replace(':lookback_days', lookbackDays.toString()).replace(':max_list_size', maxListSize.toString())
+    sql = sql.replace(':max_list_size', maxListSize.toString())
 
     const result = await client.query(sql)
     console.log(`Retrieved ${result.rows.length} members from database`)
@@ -177,6 +183,7 @@ async function archiveRemovedMembers (mailchimpMembers, dbMembers) {
   }
 
   let totalArchived = 0
+  let archiveErrors = 0
 
   for (let i = 0; i < batches.length; i++) {
     const batch = batches[i]
@@ -203,23 +210,56 @@ async function archiveRemovedMembers (mailchimpMembers, dbMembers) {
       totalArchived += batchStatus.finished_operations - batchStatus.errored_operations
     } catch (error) {
       console.error(`Failed to archive batch ${i + 1}:`, error)
+      archiveErrors++
     }
   }
 
   console.log(`Archived ${totalArchived} members from Mailchimp`)
-  return { archived: totalArchived }
+  return { archived: totalArchived, errors: archiveErrors }
 }
 
 /**
  * Sync members to Mailchimp in batches
  */
+async function runMailchimpBatchOperations (operations, label) {
+  if (operations.length === 0) {
+    return { success: 0, errors: 0, total: 0 }
+  }
+
+  const response = await mailchimp.batches.start({ operations })
+  console.log(`${label} batch operation started: ${response.id}`)
+
+  // Wait for batch to complete
+  let batchStatus
+  do {
+    await new Promise(resolve => setTimeout(resolve, 2000)) // Wait 2 seconds
+    batchStatus = await mailchimp.batches.status(response.id)
+    console.log(`${label} batch progress: ${batchStatus.finished_operations}/${batchStatus.total_operations}`)
+  } while (batchStatus.status !== 'finished')
+
+  if (batchStatus.errored_operations > 0) {
+    console.error(`\n (!) ${label} batch: ${batchStatus.errored_operations} operations failed`)
+    if (batchStatus.response_body_url) {
+      console.error(`${label} error details (tar.gz): ${batchStatus.response_body_url}`)
+    }
+  }
+
+  return {
+    success: batchStatus.finished_operations - batchStatus.errored_operations,
+    errors: batchStatus.errored_operations,
+    total: batchStatus.total_operations
+  }
+}
+
 async function syncBatchToMailchimp (members) {
-  const operations = members.map(member => {
+  const upsertOperations = []
+  const tagOperations = []
+
+  members.forEach(member => {
     const body = {
       email_address: member.email_address,
       status_if_new: member.status_if_new,
-      merge_fields: member.merge_fields,
-      tags: member.tags // Always include tags, even if empty array
+      merge_fields: member.merge_fields
     }
 
     // Only set status if member already exists (to preserve unsubscribed status)
@@ -227,38 +267,37 @@ async function syncBatchToMailchimp (members) {
       body.status = member.status
     }
 
-    return {
+    upsertOperations.push({
       method: 'PUT',
       path: `/lists/${config.mailchimp.listId}/members/${member.email_hash}`,
       body: JSON.stringify(body)
+    })
+
+    const desiredTags = new Set(member.tags || [])
+    const existingTags = new Set(member.existingTags || [])
+    const tagsToDeactivate = [...existingTags].filter(tag => !desiredTags.has(tag) && !PRESERVED_TAGS.has(tag))
+    const tagOps = [
+      ...[...desiredTags].filter(name => !existingTags.has(name)).map(name => ({ name, status: 'active' })),
+      ...tagsToDeactivate.map(name => ({ name, status: 'inactive' }))
+    ]
+
+    if (tagOps.length > 0) {
+      tagOperations.push({
+        method: 'POST',
+        path: `/lists/${config.mailchimp.listId}/members/${member.email_hash}/tags`,
+        body: JSON.stringify({ tags: tagOps })
+      })
     }
   })
 
   try {
-    const response = await mailchimp.batches.start({
-      operations
-    })
-
-    console.log(`Batch operation started: ${response.id}`)
-
-    // Wait for batch to complete
-    let batchStatus
-    do {
-      await new Promise(resolve => setTimeout(resolve, 2000)) // Wait 2 seconds
-      batchStatus = await mailchimp.batches.status(response.id)
-      console.log(`Batch progress: ${batchStatus.finished_operations}/${batchStatus.total_operations}`)
-    } while (batchStatus.status !== 'finished')
-
-    if (batchStatus.errored_operations > 0) {
-      console.error(`\n (!)  ${batchStatus.errored_operations} operations failed`)
-      if (batchStatus.response_body_url) {
-        console.error(`Error details (tar.gz): ${batchStatus.response_body_url}`)
-      }
-    }
+    // Reconcile in two phases so tags are only applied after members exist.
+    const upsertResult = await runMailchimpBatchOperations(upsertOperations, 'Upsert')
+    const tagResult = await runMailchimpBatchOperations(tagOperations, 'Tag')
 
     return {
-      success: batchStatus.finished_operations - batchStatus.errored_operations,
-      errors: batchStatus.errored_operations
+      upsert: upsertResult,
+      tag: tagResult
     }
   } catch (error) {
     console.error('Batch operation failed:', error)
@@ -272,7 +311,6 @@ async function syncBatchToMailchimp (members) {
 async function syncMailchimp () {
   console.log('Starting Mailchimp sync...')
   console.log('Configuration:', {
-    lookbackDays: config.sync.lookbackDays,
     batchSize: config.sync.batchSize,
     maxListSize: config.sync.maxListSize
   })
@@ -288,7 +326,7 @@ async function syncMailchimp () {
 
     // Step 2: Get priority members from database
     console.log('\n=== Fetching members from database ===')
-    const dbMembers = await getMembersFromDatabase(config.sync.lookbackDays, config.sync.maxListSize)
+    const dbMembers = await getMembersFromDatabase(config.sync.maxListSize)
     console.log(`Found ${dbMembers.length} members in database export`)
 
     if (dbMembers.length === 0) {
@@ -310,28 +348,38 @@ async function syncMailchimp () {
     // Step 5: Sync updates/additions to Mailchimp
     console.log('\n=== Syncing members to Mailchimp ===')
     const batches = []
-    for (let i = 0; i < formattedMembers.length; i += config.sync.batchSize) {
-      batches.push(formattedMembers.slice(i, i + config.sync.batchSize))
+    // Member upserts and tags run in separate phases, each capped at batchSize operations.
+    const maxMembersPerBatch = config.sync.batchSize
+    for (let i = 0; i < formattedMembers.length; i += maxMembersPerBatch) {
+      batches.push(formattedMembers.slice(i, i + maxMembersPerBatch))
     }
 
     console.log(`Syncing ${formattedMembers.length} members in ${batches.length} batches`)
 
-    let totalSuccess = 0
-    let totalErrors = 0
+    const totals = {
+      upsert: { success: 0, errors: 0, total: 0 },
+      tag: { success: 0, errors: 0, total: 0 }
+    }
 
     for (let i = 0; i < batches.length; i++) {
       console.log(`\nProcessing batch ${i + 1}/${batches.length} (${batches[i].length} members)`)
       const result = await syncBatchToMailchimp(batches[i])
-      totalSuccess += result.success
-      totalErrors += result.errors
+      totals.upsert.success += result.upsert.success
+      totals.upsert.errors += result.upsert.errors
+      totals.upsert.total += result.upsert.total
+      totals.tag.success += result.tag.success
+      totals.tag.errors += result.tag.errors
+      totals.tag.total += result.tag.total
     }
 
-    console.log(`\nSync completed: ${totalSuccess} successful, ${totalErrors} errors`)
+    console.log('\nSync completed:')
+    console.log(`- Upserts: ${totals.upsert.success}/${totals.upsert.total} successful, ${totals.upsert.errors} errors`)
+    console.log(`- Tags: ${totals.tag.success}/${totals.tag.total} successful, ${totals.tag.errors} errors`)
 
     // Step 6: Archive members who are no longer in the priority list
     console.log('\n=== Archiving members outside priority list ===')
     const archiveResult = await archiveRemovedMembers(mailchimpMembers, dbMembers)
-    console.log(`Archived ${archiveResult.archived} members`)
+    console.log(`- Archive: ${archiveResult.archived} archived, ${archiveResult.errors ?? 0} batch errors`)
 
     console.log('\nMailchimp sync completed successfully!')
   } catch (error) {

@@ -30,23 +30,28 @@ describe('Mailchimp Utilities', () => {
       const futureDate = new Date()
       futureDate.setDate(futureDate.getDate() + 30)
       const days = calculateDaysLeft(futureDate)
-      expect(days).toBeGreaterThanOrEqual(29)
-      expect(days).toBeLessThanOrEqual(30)
+      expect(days).toBe(30)
     })
 
     it('should calculate negative days for past date', () => {
       const pastDate = new Date()
       pastDate.setDate(pastDate.getDate() - 30)
       const days = calculateDaysLeft(pastDate)
-      expect(days).toBeLessThanOrEqual(-29)
-      expect(days).toBeGreaterThanOrEqual(-31)
+      expect(days).toBe(-30)
     })
 
     it('should calculate zero for today', () => {
       const today = new Date()
       const days = calculateDaysLeft(today)
-      expect(days).toBeLessThanOrEqual(0)
-      expect(days).toBeGreaterThanOrEqual(-1) // Allow for timing differences
+      expect(days).toBe(0)
+    })
+
+    it('should calculate one for tomorrow even if less than 24 hours away', () => {
+      const tomorrow = new Date()
+      tomorrow.setDate(tomorrow.getDate() + 1)
+      tomorrow.setHours(0, 0, 0, 0)
+      const days = calculateDaysLeft(tomorrow)
+      expect(days).toBe(1)
     })
 
     it('should return null for null', () => {
@@ -309,6 +314,17 @@ describe('formatMemberForMailchimp', () => {
     d.setDate(d.getDate() - 5)
     const result = formatMemberForMailchimp({ ...baseMember, expiry_date: d.toISOString(), membership_status: 'Expired' })
     expect(result.merge_fields.EXPIRY).toBeDefined()
-    expect(result.merge_fields.DAYSLEFT).toBeUndefined()
+    expect(result.merge_fields.DAYSLEFT).toBe('')
+  })
+
+  it('should clear discount and volunteer fields when no discount data exists', () => {
+    const result = formatMemberForMailchimp({
+      ...baseMember,
+      discount_expiry: null,
+      last_volunteered: null
+    })
+    expect(result.merge_fields.DISCEXP).toBe('')
+    expect(result.merge_fields.DDAYSLEFT).toBe('')
+    expect(result.merge_fields.LASTVOL).toBe('')
   })
 })

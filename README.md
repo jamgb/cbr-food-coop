@@ -142,13 +142,18 @@ git push heroku bravo-1:main
 The Mailchimp integration keeps the mailing list in sync with the membership database. It handles two scenarios:
 
 - **New member signup** — when a coordinator approves a signup, the new member is immediately added to the Mailchimp list with their membership details and relevant tags
-- **Ongoing sync** — a scheduled script reconciles the full membership database against Mailchimp, updating merge fields and tags, archiving lapsed members and members who unsubscribe, and re-subscribing returning members
+- **Ongoing sync** — a scheduled script performs full reconciliation against Mailchimp, updating all merge fields, reconciling tags (including removing stale tags), archiving members outside the export list, and preserving unsubscribe status as a hard constraint
 
 ### Merge fields synced
 `FNAME`, `LNAME`, `PHONE`, `SUBURB`, `MTYPE` (membership type), `CONCESSION`, `EXPIRY`, `DAYSLEFT`, `DISCEXP` (discount expiry), `JOINED`, `LASTVOL` (last volunteered)
 
 ### Tags applied automatically
 `Expiring Today`, `Expiring This Week`, `Expiring This Month`, `Expired`, `Recently Expired`, `Working Member`, `Coordinator`, `Provisional`, `Unclaimed First Shop`, concession type, discount status
+
+### Sync behavior notes
+- Member upserts and tag reconciliation run in separate Mailchimp batch phases to avoid race conditions for newly created members.
+- Tags are fully reconciled each run. Existing tags not in the computed tag set are deactivated unless explicitly preserved.
+- Subscription status is preserved for existing members (especially `unsubscribed`) and unsubscribes are synced back to the database.
 
 ## Welcome Email via Mailchimp Event API
 
@@ -197,7 +202,7 @@ yarn sync-mailchimp
 | `MAILCHIMP_SERVER_PREFIX` | e.g. `us4` |
 | `MAILCHIMP_LIST_ID` | The audience/list ID |
 | `MAILCHIMP_MAX_LIST_SIZE` | Max members to sync (default: 2000, mailchimp membership tier increases at 2500) |
-| `LOOKBACK_DAYS` | How many days back to look for changes (default: 7, use `18250` for full history) |
+| `MAILCHIMP_PRESERVE_TAGS` | Optional comma-separated list of tag names to never deactivate during reconciliation (e.g. `Do Not Remove,Manual Tag`) |
 # Roadmap
 
 ## Stage 1
