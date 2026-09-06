@@ -379,7 +379,7 @@ async function syncMailchimp () {
     // Step 6: Archive members who are no longer in the priority list
     console.log('\n=== Archiving members outside priority list ===')
     const archiveResult = await archiveRemovedMembers(mailchimpMembers, dbMembers)
-    console.log(`- Archive: ${archiveResult.archived} archived, ${archiveResult.errors} batch errors`)
+    console.log(`- Archive: ${archiveResult.archived} archived, ${archiveResult.errors ?? 0} batch errors`)
 
     console.log('\nMailchimp sync completed successfully!')
   } catch (error) {
