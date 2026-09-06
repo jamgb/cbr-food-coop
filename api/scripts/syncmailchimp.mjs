@@ -220,8 +220,38 @@ async function archiveRemovedMembers (mailchimpMembers, dbMembers) {
 /**
  * Sync members to Mailchimp in batches
  */
+async function runMailchimpBatchOperations (operations, label) {
+  if (operations.length === 0) {
+    return { success: 0, errors: 0 }
+  }
+
+  const response = await mailchimp.batches.start({ operations })
+  console.log(`${label} batch operation started: ${response.id}`)
+
+  // Wait for batch to complete
+  let batchStatus
+  do {
+    await new Promise(resolve => setTimeout(resolve, 2000)) // Wait 2 seconds
+    batchStatus = await mailchimp.batches.status(response.id)
+    console.log(`${label} batch progress: ${batchStatus.finished_operations}/${batchStatus.total_operations}`)
+  } while (batchStatus.status !== 'finished')
+
+  if (batchStatus.errored_operations > 0) {
+    console.error(`\n (!) ${label} batch: ${batchStatus.errored_operations} operations failed`)
+    if (batchStatus.response_body_url) {
+      console.error(`${label} error details (tar.gz): ${batchStatus.response_body_url}`)
+    }
+  }
+
+  return {
+    success: batchStatus.finished_operations - batchStatus.errored_operations,
+    errors: batchStatus.errored_operations
+  }
+}
+
 async function syncBatchToMailchimp (members) {
-  const operations = []
+  const upsertOperations = []
+  const tagOperations = []
 
   members.forEach(member => {
     const body = {
@@ -235,7 +265,7 @@ async function syncBatchToMailchimp (members) {
       body.status = member.status
     }
 
-    operations.push({
+    upsertOperations.push({
       method: 'PUT',
       path: `/lists/${config.mailchimp.listId}/members/${member.email_hash}`,
       body: JSON.stringify(body)
@@ -249,38 +279,23 @@ async function syncBatchToMailchimp (members) {
       ...tagsToDeactivate.map(name => ({ name, status: 'inactive' }))
     ]
 
-    operations.push({
-      method: 'POST',
-      path: `/lists/${config.mailchimp.listId}/members/${member.email_hash}/tags`,
-      body: JSON.stringify({ tags: tagOps })
-    })
+    if (tagOps.length > 0) {
+      tagOperations.push({
+        method: 'POST',
+        path: `/lists/${config.mailchimp.listId}/members/${member.email_hash}/tags`,
+        body: JSON.stringify({ tags: tagOps })
+      })
+    }
   })
 
   try {
-    const response = await mailchimp.batches.start({
-      operations
-    })
-
-    console.log(`Batch operation started: ${response.id}`)
-
-    // Wait for batch to complete
-    let batchStatus
-    do {
-      await new Promise(resolve => setTimeout(resolve, 2000)) // Wait 2 seconds
-      batchStatus = await mailchimp.batches.status(response.id)
-      console.log(`Batch progress: ${batchStatus.finished_operations}/${batchStatus.total_operations}`)
-    } while (batchStatus.status !== 'finished')
-
-    if (batchStatus.errored_operations > 0) {
-      console.error(`\n (!)  ${batchStatus.errored_operations} operations failed`)
-      if (batchStatus.response_body_url) {
-        console.error(`Error details (tar.gz): ${batchStatus.response_body_url}`)
-      }
-    }
+    // Reconcile in two phases so tags are only applied after members exist.
+    const upsertResult = await runMailchimpBatchOperations(upsertOperations, 'Upsert')
+    const tagResult = await runMailchimpBatchOperations(tagOperations, 'Tag')
 
     return {
-      success: batchStatus.finished_operations - batchStatus.errored_operations,
-      errors: batchStatus.errored_operations
+      success: upsertResult.success + tagResult.success,
+      errors: upsertResult.errors + tagResult.errors
     }
   } catch (error) {
     console.error('Batch operation failed:', error)
@@ -332,8 +347,8 @@ async function syncMailchimp () {
     // Step 5: Sync updates/additions to Mailchimp
     console.log('\n=== Syncing members to Mailchimp ===')
     const batches = []
-    // Each member generates two Mailchimp operations (PUT member + POST tags).
-    const maxMembersPerBatch = Math.max(1, Math.floor(config.sync.batchSize / 2))
+    // Member upserts and tags run in separate phases, each capped at batchSize operations.
+    const maxMembersPerBatch = config.sync.batchSize
     for (let i = 0; i < formattedMembers.length; i += maxMembersPerBatch) {
       batches.push(formattedMembers.slice(i, i + maxMembersPerBatch))
     }
