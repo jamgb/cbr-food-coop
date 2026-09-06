@@ -183,6 +183,7 @@ async function archiveRemovedMembers (mailchimpMembers, dbMembers) {
   }
 
   let totalArchived = 0
+  let archiveErrors = 0
 
   for (let i = 0; i < batches.length; i++) {
     const batch = batches[i]
@@ -209,11 +210,12 @@ async function archiveRemovedMembers (mailchimpMembers, dbMembers) {
       totalArchived += batchStatus.finished_operations - batchStatus.errored_operations
     } catch (error) {
       console.error(`Failed to archive batch ${i + 1}:`, error)
+      archiveErrors++
     }
   }
 
   console.log(`Archived ${totalArchived} members from Mailchimp`)
-  return { archived: totalArchived }
+  return { archived: totalArchived, errors: archiveErrors }
 }
 
 /**
@@ -221,7 +223,7 @@ async function archiveRemovedMembers (mailchimpMembers, dbMembers) {
  */
 async function runMailchimpBatchOperations (operations, label) {
   if (operations.length === 0) {
-    return { success: 0, errors: 0 }
+    return { success: 0, errors: 0, total: 0 }
   }
 
   const response = await mailchimp.batches.start({ operations })
@@ -244,7 +246,8 @@ async function runMailchimpBatchOperations (operations, label) {
 
   return {
     success: batchStatus.finished_operations - batchStatus.errored_operations,
-    errors: batchStatus.errored_operations
+    errors: batchStatus.errored_operations,
+    total: batchStatus.total_operations
   }
 }
 
@@ -274,7 +277,7 @@ async function syncBatchToMailchimp (members) {
     const existingTags = new Set(member.existingTags || [])
     const tagsToDeactivate = [...existingTags].filter(tag => !desiredTags.has(tag) && !PRESERVED_TAGS.has(tag))
     const tagOps = [
-      ...[...desiredTags].filter(name => !existingTags.has(name)).map(name => ({ name, status: 'active' }))
+      ...[...desiredTags].filter(name => !existingTags.has(name)).map(name => ({ name, status: 'active' })),
       ...tagsToDeactivate.map(name => ({ name, status: 'inactive' }))
     ]
 
@@ -293,8 +296,8 @@ async function syncBatchToMailchimp (members) {
     const tagResult = await runMailchimpBatchOperations(tagOperations, 'Tag')
 
     return {
-      success: upsertResult.success + tagResult.success,
-      errors: upsertResult.errors + tagResult.errors
+      upsert: upsertResult,
+      tag: tagResult
     }
   } catch (error) {
     console.error('Batch operation failed:', error)
@@ -353,22 +356,30 @@ async function syncMailchimp () {
 
     console.log(`Syncing ${formattedMembers.length} members in ${batches.length} batches`)
 
-    let totalSuccess = 0
-    let totalErrors = 0
+    const totals = {
+      upsert: { success: 0, errors: 0, total: 0 },
+      tag: { success: 0, errors: 0, total: 0 }
+    }
 
     for (let i = 0; i < batches.length; i++) {
       console.log(`\nProcessing batch ${i + 1}/${batches.length} (${batches[i].length} members)`)
       const result = await syncBatchToMailchimp(batches[i])
-      totalSuccess += result.success
-      totalErrors += result.errors
+      totals.upsert.success += result.upsert.success
+      totals.upsert.errors += result.upsert.errors
+      totals.upsert.total += result.upsert.total
+      totals.tag.success += result.tag.success
+      totals.tag.errors += result.tag.errors
+      totals.tag.total += result.tag.total
     }
 
-    console.log(`\nSync completed: ${totalSuccess} successful, ${totalErrors} errors`)
+    console.log('\nSync completed:')
+    console.log(`- Upserts: ${totals.upsert.success}/${totals.upsert.total} successful, ${totals.upsert.errors} errors`)
+    console.log(`- Tags: ${totals.tag.success}/${totals.tag.total} successful, ${totals.tag.errors} errors`)
 
     // Step 6: Archive members who are no longer in the priority list
     console.log('\n=== Archiving members outside priority list ===')
     const archiveResult = await archiveRemovedMembers(mailchimpMembers, dbMembers)
-    console.log(`Archived ${archiveResult.archived} members`)
+    console.log(`- Archive: ${archiveResult.archived} archived, ${archiveResult.errors} batch errors`)
 
     console.log('\nMailchimp sync completed successfully!')
   } catch (error) {
