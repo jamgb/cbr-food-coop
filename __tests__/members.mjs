@@ -3,7 +3,8 @@ import { DateTime } from 'luxon'
 
 const mockDatabase = {
   __esModule: true,
-  query: jest.fn()
+  query: jest.fn(),
+  withTransaction: jest.fn()
 }
 // Jest >= 27.1.1
 jest.unstable_mockModule('../api/database.mjs', () => mockDatabase)
@@ -13,6 +14,8 @@ const { getNextMemberId, getNextMembershipId } = await import('../api/signup.mjs
 
 beforeEach(() => {
   mockDatabase.query.mockReset()
+  mockDatabase.withTransaction.mockReset()
+  mockDatabase.withTransaction.mockImplementation(async (callback) => callback(mockDatabase.query))
 })
 
 it('should update the hours correctly', async () => {
@@ -65,6 +68,7 @@ it('should mark member deleted and append history', async () => {
   const result = await markMemberDeleted('c10', 'Admin User')
 
   expect(result).toEqual({ status: 'deleted' })
+  expect(mockDatabase.withTransaction).toHaveBeenCalledTimes(1)
   expect(mockDatabase.query).toHaveBeenCalledTimes(3)
   expect(mockDatabase.query.mock.calls[1][0]).toContain('UPDATE customers SET visible = false')
   expect(mockDatabase.query.mock.calls[1][1]).toEqual(['c10'])

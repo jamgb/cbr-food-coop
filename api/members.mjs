@@ -1,7 +1,7 @@
 import express from 'express'
 import { randomUUID } from 'crypto'
 import { DateTime } from 'luxon'
-import { query } from './database.mjs'
+import { query, withTransaction } from './database.mjs'
 import { hasRole } from './utils.mjs'
 
 const router = express.Router()
@@ -76,18 +76,20 @@ export async function markMemberDeleted (memberId, actorName) {
   if (members[0].visible === false) return { status: 'already-deleted' }
 
   const dateDeleted = DateTime.now().toString()
-  await query('UPDATE customers SET visible = false WHERE id = $1', [memberId])
-  await query(
-    'INSERT into members_history (id, datenew, member, action, amountpaid, notes) values($1, $2, $3, $4, $5, $6)',
-    [
-      randomUUID(),
-      dateDeleted,
-      memberId,
-      'Deleted',
-      null,
-      `Marked as deleted by ${actorName}`
-    ]
-  )
+  await withTransaction(async (txQuery) => {
+    await txQuery('UPDATE customers SET visible = false WHERE id = $1', [memberId])
+    await txQuery(
+      'INSERT into members_history (id, datenew, member, action, amountpaid, notes) values($1, $2, $3, $4, $5, $6)',
+      [
+        randomUUID(),
+        dateDeleted,
+        memberId,
+        'Deleted',
+        null,
+        `Marked as deleted by ${actorName}`
+      ]
+    )
+  })
 
   return { status: 'deleted' }
 }
