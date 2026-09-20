@@ -112,7 +112,6 @@
 
 <script>
 import {
-  buildApprovalSheetText,
   downloadApprovalSheetAsPdf
 } from '../utils/approvalSheetPdf'
 
@@ -163,6 +162,21 @@ export default {
           field: row => row.email,
           sortable: true,
           align: 'left'
+        },
+        {
+          name: 'postcode',
+          label: 'Postcode',
+          field: row => row.postal,
+          sortable: true,
+          align: 'left'
+        },
+        {
+          name: 'signupDate',
+          label: 'Signup Date',
+          field: row => row.curdate,
+          format: val => val ? new Date(val).toLocaleDateString('en-AU') : '—',
+          sortable: true,
+          align: 'left'
         }
       ]
     }
@@ -170,16 +184,12 @@ export default {
   methods: {
     async downloadApprovalSheetPdf () {
       try {
-        const content = buildApprovalSheetText({
+        await downloadApprovalSheetAsPdf({
           selected: this.selected,
           signedby1: this.signedby1,
           signedby2: this.signedby2,
-          notes: this.notes
-        })
-
-        await downloadApprovalSheetAsPdf({
-          content,
-          title: 'Approval Sheet'
+          notes: this.notes,
+          title: 'Membership Approval Sheet'
         })
       } catch (err) {
         this.$q.notify({

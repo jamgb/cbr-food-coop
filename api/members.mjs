@@ -44,7 +44,7 @@ function isValidMemberId (memberId) {
 
 router.get('/', hasRole('coordinator'), async (req, res) => {
   try {
-    const results = await query('SELECT id, name, address, city, postal, membership_id, vend_id, email, phone, firstname, lastname, expires, discvaliduntil, first_shop, approved, visible FROM customers NATURAL JOIN memberships WHERE visible = true')
+    const results = await query('SELECT id, name, address, city, postal, membership_id, vend_id, email, phone, firstname, lastname, expires, discvaliduntil, first_shop, approved, visible, curdate FROM customers NATURAL JOIN memberships WHERE visible = true')
     res.send(results)
   } catch (err) {
     console.error(err)
