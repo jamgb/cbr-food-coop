@@ -218,7 +218,9 @@ export default {
       this.deleting = true
       try {
         const membersToDelete = [...this.selected]
-        await Promise.all(membersToDelete.map(member => this.$store.dispatch('members/deleteMember', member.id)))
+for (const member of membersToDelete) {
+          await this.$store.dispatch('members/deleteMember', member.id)
+        }
         this.selected = []
         this.$q.notify({
           color: 'green-4',
