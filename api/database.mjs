@@ -60,6 +60,26 @@ export function end () {
   return pool.end()
 }
 
+export async function withTransaction (callback) {
+  const client = await pool.connect()
+  const txQuery = async (statement, args) => {
+    const result = await client.query(statement, args)
+    return result.rows
+  }
+
+  try {
+    await client.query('BEGIN')
+    const result = await callback(txQuery)
+    await client.query('COMMIT')
+    return result
+  } catch (err) {
+    await client.query('ROLLBACK')
+    throw err
+  } finally {
+    client.release()
+  }
+}
+
 export async function query (statement, args) {
   const client = await pool.connect()
   return new Promise((resolve, reject) => {

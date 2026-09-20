@@ -1,5 +1,5 @@
 export function toBeApproved (state) {
-  return state.members.filter(member => !member.approved)
+  return state.members.filter(member => !member.approved && member.visible !== false)
 }
 
 export function memberLookup (state) {

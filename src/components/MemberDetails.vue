@@ -86,6 +86,13 @@
         </template>
         <template v-else>
           <q-btn
+            v-if="isAdmin"
+            color="negative"
+            :disable="saving"
+            label="Delete member"
+            @click="confirmDelete"
+          />
+          <q-btn
             label="Edit member details"
             @click="edit = true"
           />
@@ -113,10 +120,50 @@ export default {
   mounted () {
     this.member = { ...this.$store.state.members.members.find(member => member.id === this.memberId) }
   },
+  computed: {
+    isAdmin () {
+      return this.$store.state.members.user?.role === 'admin'
+    }
+  },
   methods: {
     cancel () {
       this.edit = false
       this.member = { ...this.$store.state.members.members.find(member => member.id === this.memberId) }
+    },
+    confirmDelete () {
+      this.$q.dialog({
+        title: 'Delete member?',
+        message: 'This will mark this member as deleted and remove them from active member lists.',
+        cancel: true,
+        persistent: true,
+        ok: {
+          color: 'negative',
+          label: 'Delete'
+        }
+      }).onOk(async () => {
+        await this.deleteMember()
+      })
+    },
+    async deleteMember () {
+      this.saving = true
+      try {
+        await this.$store.dispatch('members/deleteMember', this.memberId)
+        this.$q.notify({
+          color: 'green-4',
+          textColor: 'white',
+          icon: 'cloud_done',
+          message: 'Member marked as deleted'
+        })
+        this.$router.push({ name: 'Members' })
+      } catch (err) {
+        this.$q.notify({
+          color: 'red-4',
+          textColor: 'white',
+          icon: 'error',
+          message: 'Failed to delete member'
+        })
+      }
+      this.saving = false
     },
     async claim_shop () {
       this.member.first_shop = true
