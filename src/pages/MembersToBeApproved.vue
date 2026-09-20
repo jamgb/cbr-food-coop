@@ -218,7 +218,7 @@ export default {
       this.deleting = true
       try {
         const membersToDelete = [...this.selected]
-for (const member of membersToDelete) {
+        for (const member of membersToDelete) {
           await this.$store.dispatch('members/deleteMember', member.id)
         }
         this.selected = []
